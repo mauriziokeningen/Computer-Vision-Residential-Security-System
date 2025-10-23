@@ -1,5 +1,5 @@
 # Ignore the specific virtual environment
-Modulos/Reconocimiento Facial/venv_seguridad/
+Modules/Facial Recognition/venv_seguridad/
 
 # Also ignore any folder named venv or .venv just in case
 venv/
