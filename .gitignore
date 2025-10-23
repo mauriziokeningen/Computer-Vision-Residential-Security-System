@@ -1,0 +1,13 @@
+# Ignore the specific virtual environment
+Modulos/Reconocimiento Facial/venv_seguridad/
+
+# Also ignore any folder named venv or .venv just in case
+venv/
+.venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore environment variable files
+.env
