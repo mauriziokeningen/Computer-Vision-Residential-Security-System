@@ -5,7 +5,7 @@ import psycopg2 # Keep for future DB connection
 import os
 
 # --- CONFIGURATION ---
-IMAGE_TO_TEST = "photos/test/Abdullah_Gul/Abdullah_Gul_0001.jpg" # <--- CHANGE THIS PATH
+IMAGE_TO_TEST = "photos/test/Abdullah_Gul/Abdullah_Gul_0002.jpg" # <--- CHANGE THIS PATH
 
 # --- System Constants ---
 SIMILARITY_THRESHOLD = 0.68  # Threshold for ArcFace. Tune as needed.
@@ -62,7 +62,7 @@ def load_references_from_db():
     try:
         # Define multiple images for the reference person
         reference_image_paths = [
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0002.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0001.jpg",
             "photos/test/Abdullah_Gul/Abdullah_Gul_0003.jpg",
             "photos/test/Abdullah_Gul/Abdullah_Gul_0004.jpg",
             "photos/test/Abdullah_Gul/Abdullah_Gul_0005.jpg",
