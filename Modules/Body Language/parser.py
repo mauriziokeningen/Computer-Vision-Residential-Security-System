@@ -1,6 +1,6 @@
 import numpy as np
+import sys
 import os
-import sys 
 
 user_name = 'user'
 save_npy_path = '/home/user/AI_workspace/datasets/NTU/raw_npy120/'
