@@ -1,14 +1,14 @@
 import cv2
 import numpy as np
+#import psycopg2
 from deepface import DeepFace
-import psycopg2 # Keep for future DB connection
 import os
 
 # --- CONFIGURATION ---
-IMAGE_TO_TEST = "photos/test/Abdullah_Gul/Abdullah_Gul_0002.jpg" # <--- CHANGE THIS PATH
+IMAGE_TO_TEST = "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0002.jpg" 
 
 # --- System Constants ---
-SIMILARITY_THRESHOLD = 0.68  # Threshold for ArcFace. Tune as needed.
+SIMILARITY_THRESHOLD = 0.68  # Threshold for ArcFace.
 FACIAL_MODEL = "ArcFace"
 DETECTOR_BACKEND = "mtcnn"
 
@@ -39,7 +39,6 @@ def load_references_from_db():
     NOW SIMULATES A ROBUST, AVERAGED ENROLLMENT.
     """
     references = {}
-    
     # --- DB Connection Logic would go here (Uncomment and configure later) ---
     # try:
     #     conn = psycopg2.connect(database="your_db", user="your_user", password="your_password", host="your_host", port="5432")
@@ -59,34 +58,35 @@ def load_references_from_db():
     #     print("Continuing with simulation data only.")
     
     # --- Robust Simulation ---
+    
     try:
         # Define multiple images for the reference person
         reference_image_paths = [
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0001.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0003.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0004.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0005.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0006.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0007.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0008.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0009.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0010.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0011.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0012.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0013.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0014.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0015.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0016.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0017.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0018.jpg",
-            "photos/test/Abdullah_Gul/Abdullah_Gul_0019.jpg"
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0001.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0003.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0004.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0005.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0006.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0007.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0008.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0009.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0010.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0011.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0012.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0013.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0014.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0015.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0016.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0017.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0018.jpg",
+            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0019.jpg"
         ]
         
         # Check if reference images exist
         existing_paths = [p for p in reference_image_paths if os.path.exists(p)]
         if not existing_paths:
-             print(f"Warning: No reference images found for Abdullah Gul in photos/test/Abdullah_Gul/. Cannot create reference.")
-             return references # Return empty if no refs found
+            print(f"Warning: No reference images found for Abdullah Gul in Modules/Facial Recognition/photos/test/Abdullah_Gul/. Cannot create reference.")
+            return references  # Return empty if no refs found
 
         print(f"Generating robust reference signature using {len(existing_paths)} images...")
         avg_embedding = generate_average_embedding(existing_paths)
@@ -98,7 +98,6 @@ def load_references_from_db():
             
     except Exception as e:
         print(f"Simulation error during reference loading: {e}")
-    # --- End Simulation ---
     
     print(f"Loaded {len(references)} facial references into memory.")
     return references
@@ -109,29 +108,25 @@ def find_best_match(live_embedding, references):
     """
     best_name = "Unknown"
     best_similarity = 0.0
-    best_match_name = None # Track the name of the top match
+    best_match_name = None
     
     for name, ref_embedding in references.items():
-        # Ensure vectors are numpy arrays for calculation
         live_np = np.asarray(live_embedding)
         ref_np = np.asarray(ref_embedding)
 
-        # Calculate Cosine Similarity safely
         dot_product = np.dot(live_np, ref_np)
         norm_live = np.linalg.norm(live_np)
         norm_ref = np.linalg.norm(ref_np)
         
-        # Avoid division by zero if norms are zero
         if norm_live > 0 and norm_ref > 0:
             similarity = dot_product / (norm_live * norm_ref)
         else:
-            similarity = 0.0 # Or handle appropriately
+            similarity = 0.0
 
         if similarity > best_similarity:
             best_similarity = similarity
             best_match_name = name
             
-    # Assign name only if similarity meets the threshold
     if best_similarity >= SIMILARITY_THRESHOLD:
         best_name = best_match_name
         
@@ -150,39 +145,34 @@ if __name__ == "__main__":
         else:
             try:
                 print(f"Processing image: {IMAGE_TO_TEST}")
-                # Ensure frame is valid before processing
                 if frame.size == 0:
                     print("Error: Image loaded but is empty.")
                 else:
                     detected_faces = DeepFace.extract_faces(
                         img_path=frame.copy(),
                         detector_backend=DETECTOR_BACKEND,
-                        enforce_detection=False # Don't crash if no face found
+                        enforce_detection=False
                     )
                     
                     if not detected_faces or all(face['confidence'] == 0 for face in detected_faces):
-                         print("No faces detected in the image.")
+                        print("No faces detected in the image.")
 
                     processed_a_face = False
                     for face in detected_faces:
-                        if face.get('confidence', 0) == 0: continue # Skip if confidence key missing or 0
-
-                        # Ensure facial_area has expected keys
-                        if not all(k in face.get('facial_area', {}) for k in ['x', 'y', 'w', 'h']):
-                            print("Warning: Detected face data is incomplete. Skipping.")
+                        if face.get('confidence', 0) == 0:
                             continue
 
                         fa = face['facial_area']
-                        x, y, w, h = fa['x'], fa['y'], fa['w'], fa['h']
+                        if not all(k in fa for k in ['x', 'y', 'w', 'h']):
+                            print("Warning: Detected face data is incomplete. Skipping.")
+                            continue
 
-                        # Ensure coordinates are valid before cropping
-                        if w <= 0 or h <= 0 or x < 0 or y < 0 or y+h > frame.shape[0] or x+w > frame.shape[1]:
-                             print(f"Warning: Invalid face coordinates detected ({x},{y},{w},{h}). Skipping.")
-                             continue
+                        x, y, w, h = fa['x'], fa['y'], fa['w'], fa['h']
+                        if w <= 0 or h <= 0 or x < 0 or y < 0 or y + h > frame.shape[0] or x + w > frame.shape[1]:
+                            print(f"Warning: Invalid face coordinates detected ({x},{y},{w},{h}). Skipping.")
+                            continue
                              
                         cropped_face = frame[y:y+h, x:x+w]
-                        
-                        # Ensure cropped face is not empty before representing
                         if cropped_face.size == 0:
                             print("Warning: Cropped face area is empty. Skipping.")
                             continue
@@ -191,8 +181,8 @@ if __name__ == "__main__":
                             live_embedding_info = DeepFace.represent(
                                 img_path=cropped_face,
                                 model_name=FACIAL_MODEL,
-                                detector_backend='skip', # Use 'skip' since it's already cropped
-                                enforce_detection=False # Should find face in crop
+                                detector_backend='skip',
+                                enforce_detection=False
                             )
 
                             if not live_embedding_info:
@@ -202,10 +192,8 @@ if __name__ == "__main__":
                             live_embedding = live_embedding_info[0]['embedding']
                             
                             name, similarity = find_best_match(np.array(live_embedding), known_references)
+                            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
                             
-                            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255) # Green if known, Red if Unknown
-                            
-                            # --- Robust Text Positioning Logic ---
                             text = f"{name} ({similarity*100:.1f}%)"
                             font = cv2.FONT_HERSHEY_SIMPLEX
                             font_scale = 0.7
@@ -213,48 +201,42 @@ if __name__ == "__main__":
 
                             (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
-                            # Y position: Above if space, else Below
                             if y > text_height + 15:
                                 text_y = y - 10
                             else:
                                 text_y = y + h + text_height + 10
 
-                            # X position: Adjust to prevent overflow left/right
                             image_width = frame.shape[1]
                             ideal_text_x = x
                             
                             if ideal_text_x + text_width > image_width - 10:
                                 text_x = max(0, x + w - text_width)
-                                if text_x + text_width > image_width -10:
+                                if text_x + text_width > image_width - 10:
                                     text_x = image_width - text_width - 10
                             else:
                                 text_x = max(ideal_text_x, 5)
 
-                            # Optional: Background rectangle for text
-                            cv2.rectangle(frame, (text_x, text_y - text_height - baseline), (text_x + text_width, text_y + baseline), (50, 50, 50), cv2.FILLED)
+                            cv2.rectangle(frame, (text_x, text_y - text_height - baseline),
+                                          (text_x + text_width, text_y + baseline),
+                                          (50, 50, 50), cv2.FILLED)
                             
-                            # Draw the rectangle and text
-                            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
                             cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness)
                             processed_a_face = True
                             
-                        except ValueError as ve: # Catch potential errors from DeepFace.represent if crop is bad
-                             print(f"Error representing cropped face at ({x},{y},{w},{h}): {ve}")
+                        except ValueError as ve:
+                            print(f"Error representing cropped face at ({x},{y},{w},{h}): {ve}")
                         except Exception as e:
                             print(f"Could not process a detected face: {e}")
 
             except Exception as e:
                 print(f"An error occurred during face detection or processing: {e}")
             
-            # Display results only if image was loaded and faces were processed
             if frame is not None and processed_a_face:
-                 print("Processing complete. Displaying results. Press any key to exit.")
-                 cv2.imshow("Security System - Test Result", frame)
-                 cv2.waitKey(0) # Wait indefinitely until a key is pressed
+                print("Processing complete. Displaying results. Press any key to exit.")
+                cv2.imshow("Security System - Test Result", frame)
+                cv2.waitKey(0)
             elif frame is not None and not processed_a_face:
-                 print("Processing complete, but no faces were successfully processed to display.")
-                 # Optionally display the original image anyway
-                 # cv2.imshow("Security System - No Faces Processed", frame)
-                 # cv2.waitKey(0)
+                print("Processing complete, but no faces were successfully processed to display.")
             
             cv2.destroyAllWindows()
