@@ -17,7 +17,8 @@ options = vision.PoseLandmarkerOptions(
 landmarker = vision.PoseLandmarker.create_from_options(options)
 
 #read input video
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0)  # For Windows OS, add cv2.CAP_DSHOW to use DirectShow backend: cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+
 while True:
     ret, frame = cap.read()
     if ret == False:
