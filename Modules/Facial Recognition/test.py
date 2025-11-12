@@ -5,7 +5,7 @@ from deepface import DeepFace
 import os
 
 # --- CONFIGURATION ---
-IMAGE_TO_TEST = "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0002.jpg" 
+IMAGE_TO_TEST = "photos/test/Abdullah_Gul/Abdullah_Gul_0002.jpg" 
 
 # --- System Constants ---
 SIMILARITY_THRESHOLD = 0.68  # Threshold for ArcFace.
@@ -62,30 +62,30 @@ def load_references_from_db():
     try:
         # Define multiple images for the reference person
         reference_image_paths = [
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0001.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0003.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0004.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0005.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0006.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0007.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0008.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0009.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0010.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0011.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0012.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0013.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0014.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0015.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0016.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0017.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0018.jpg",
-            "Modules/Facial Recognition/photos/test/Abdullah_Gul/Abdullah_Gul_0019.jpg"
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0001.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0003.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0004.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0005.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0006.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0007.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0008.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0009.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0010.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0011.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0012.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0013.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0014.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0015.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0016.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0017.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0018.jpg",
+            "photos/test/Abdullah_Gul/Abdullah_Gul_0019.jpg"
         ]
         
         # Check if reference images exist
         existing_paths = [p for p in reference_image_paths if os.path.exists(p)]
         if not existing_paths:
-            print(f"Warning: No reference images found for Abdullah Gul in Modules/Facial Recognition/photos/test/Abdullah_Gul/. Cannot create reference.")
+            print(f"Warning: No reference images found for Abdullah Gul in photos/test/Abdullah_Gul/. Cannot create reference.")
             return references  # Return empty if no refs found
 
         print(f"Generating robust reference signature using {len(existing_paths)} images...")
