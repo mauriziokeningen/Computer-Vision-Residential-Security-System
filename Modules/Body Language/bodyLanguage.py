@@ -11,7 +11,7 @@ def res_callback(result, output, timestamp_ms):
 
 #specify config
 options = vision.PoseLandmarkerOptions(
-    base_options = BaseOptions(model_asset_path='Modules/Body Language/model/pose_landmarker_lite.task'),
+    base_options = BaseOptions(model_asset_path='model/pose_landmarker_lite.task'),
     running_mode = vision.RunningMode.LIVE_STREAM,
     result_callback = res_callback)
 landmarker = vision.PoseLandmarker.create_from_options(options)
