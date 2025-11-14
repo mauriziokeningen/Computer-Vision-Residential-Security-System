@@ -1,33 +1,19 @@
-# --- Python Virtual Environments ---
-# Ignora los entornos virtuales específicos de tu proyecto
 Modules/Body Language/.venv2/
 Modules/Facial Recognition/.venv1/
-
 .venv/
 venv/
 env/
+venv3/
 
-
-# --- Archivos compilados y cache de Python ---
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-
-# --- Datos, Modelos y Logs ---
-# Ignora la carpeta de modelos (los archivos .task, .h5, etc. no van en Git)
 Modules/Body Language/model/
-
-# ¡IMPORTANTE! Ignora las fotos de usuarios registrados
-# No se deben subir datos personales (caras) al repositorio
 Modules/Facial Recognition/photos/
 
-# Ignora archivos de log
 *.log
 
-
-# --- Configuración y Secretos ---
-# Ignora archivos de variables de entorno (API keys, contraseñas, etc.)
 .env
 .env.*
