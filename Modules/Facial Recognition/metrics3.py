@@ -5,9 +5,7 @@ import random
 import matplotlib.pyplot as plt
 import seaborn as sns
 from deepface import DeepFace
-from sklearn.metrics import (confusion_matrix, classification_report, f1_score, 
-                             accuracy_score, precision_score, recall_score, 
-                             roc_curve, auc)
+from sklearn.metrics import (confusion_matrix, classification_report, f1_score, accuracy_score, precision_score, recall_score, roc_curve, auc)
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
 from tqdm import tqdm
@@ -29,7 +27,7 @@ FACIAL_MODEL = "ArcFace"
 DETECTOR_BACKEND = "mtcnn"
 
 # CRITERIOS DE LA PRUEBA
-MIN_IMAGES_REQUIRED = 20   
+MIN_IMAGES_REQUIRED = 20
 IMPOSTORS_PER_SUBJECT = 100 
 
 # ==========================================
@@ -37,7 +35,7 @@ IMPOSTORS_PER_SUBJECT = 100
 # ==========================================
 
 def get_all_images_recursive(root_folder):
-    # ... (Función sin cambios)
+ # ... (Función sin cambios)
     images = []
     print("Indexando banco de imágenes...")
     for root, dirs, files in os.walk(root_folder):
@@ -47,7 +45,7 @@ def get_all_images_recursive(root_folder):
     return images
 
 def get_embedding(img_path):
-    # ... (Función sin cambios)
+ # ... (Función sin cambios)
     try:
         res = DeepFace.represent(
             img_path=img_path, 
@@ -60,7 +58,7 @@ def get_embedding(img_path):
         return None
 
 def calculate_similarity(emb1, emb2):
-    # ... (Función sin cambios)
+ # ... (Función sin cambios)
     norm1 = np.linalg.norm(emb1)
     norm2 = np.linalg.norm(emb2)
     if norm1 == 0 or norm2 == 0: return 0.0
@@ -71,7 +69,7 @@ def calculate_similarity(emb1, emb2):
 # ==========================================
 
 def plot_full_report(global_y_true, global_y_scores, subject_metrics):
-    # ... (Todo el código de ploteo y métricas, sin cambios en la lógica)
+ # ... (Todo el código de ploteo y métricas, sin cambios en la lógica)
     sns.set_style("whitegrid")
     
     print("\nCalculando curvas ROC y métricas avanzadas...")
@@ -108,8 +106,8 @@ def plot_full_report(global_y_true, global_y_scores, subject_metrics):
     tn, fp, fn, tp = confusion_matrix(global_y_true, global_preds).ravel()
     
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-    far = fp / (fp + tn) if (fp + tn) > 0 else 0  # False Acceptance Rate
-    frr = fn / (fn + tp) if (fn + tp) > 0 else 0  # False Rejection Rate
+    far = fp / (fp + tn) if (fp + tn) > 0 else 0  # False Acceptance Rate
+    frr = fn / (fn + tp) if (fn + tp) > 0 else 0  # False Rejection Rate
     accuracy = accuracy_score(global_y_true, global_preds)
     precision = precision_score(global_y_true, global_preds, zero_division=0)
     recall = recall_score(global_y_true, global_preds, zero_division=0)
@@ -163,26 +161,26 @@ def plot_full_report(global_y_true, global_y_scores, subject_metrics):
 
     # --- REPORTE TEXTUAL EN CONSOLA (Sin cambios) ---
     print("\n" + "="*60)
-    print("       REPORTE DE RENDIMIENTO BIOMÉTRICO - ARC FACE")
+    print("       REPORTE DE RENDIMIENTO BIOMÉTRICO - ARC FACE")
     print("="*60)
     print(f"Modelo: {FACIAL_MODEL} | Backend: {DETECTOR_BACKEND}")
     print(f"Base de Datos: LFW | Sujetos Analizados: {len(subject_metrics)}")
     print(f"Total Muestras: {len(global_y_true)} (Genuinos: {tp+fn}, Impostores: {tn+fp})")
     print("-" * 60)
-    print(f"1. EXACTITUD (Accuracy):          {accuracy*100:.2f}%")
-    print(f"2. F1-SCORE (Balance):            {best_f1:.4f}")
-    print(f"3. AUC-ROC (Potencia):            {roc_auc:.4f}")
-    print(f"4. EER (Equal Error Rate):        {eer:.4f} ({eer*100:.2f}%) <-- MÉTRICA CLAVE")
+    print(f"1. EXACTITUD (Accuracy):          {accuracy*100:.2f}%")
+    print(f"2. F1-SCORE (Balance):            {best_f1:.4f}")
+    print(f"3. AUC-ROC (Potencia):            {roc_auc:.4f}")
+    print(f"4. EER (Equal Error Rate):        {eer:.4f} ({eer*100:.2f}%) <-- MÉTRICA CLAVE")
     print("-" * 60)
     print("PUNTO DE OPERACIÓN ÓPTIMO (Max F1):")
-    print(f"   - Umbral Configurado:          {final_thresh:.2f}")
-    print(f"   - FAR (Falsos Aceptados):      {far*100:.4f}%  (Seguridad)")
-    print(f"   - FRR (Falsos Rechazados):     {frr*100:.4f}%  (Conveniencia)")
+    print(f"   - Umbral Configurado:          {final_thresh:.2f}")
+    print(f"   - FAR (Falsos Aceptados):      {far*100:.4f}%  (Seguridad)")
+    print(f"   - FRR (Falsos Rechazados):     {frr*100:.4f}%  (Conveniencia)")
     print("-" * 60)
     print("OTRAS MÉTRICAS:")
-    print(f"   - Recall (Sensibilidad):       {recall:.4f}")
-    print(f"   - Especificidad:               {specificity:.4f}")
-    print(f"   - Precisión:                   {precision:.4f}")
+    print(f"   - Recall (Sensibilidad):       {recall:.4f}")
+    print(f"   - Especificidad:               {specificity:.4f}")
+    print(f"   - Precisión:                   {precision:.4f}")
     print("="*60)
     
     return fpr, tpr, roc_thresholds, eer # Devolvemos los arrays para el guardado
