@@ -63,7 +63,10 @@ def ensure_extracted_from_zip():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not zip_path.exists():
-        raise FileNotFoundError(f"No se encontró el ZIP: {zip_path}")
+        # Intenta buscar en el directorio actual si __file__ falla
+        zip_path = Path(ZIP_NAME)
+        if not zip_path.exists():
+             raise FileNotFoundError(f"No se encontró el ZIP: {zip_path}")
 
     # Detectar si ya hay suficientes archivos extraídos
     existing = list(out_dir.rglob("*.skeleton"))
@@ -84,7 +87,10 @@ def ensure_extracted_from_zip():
 
     # DATA_DIR esperado
     candidate = out_dir / "nturgb+d_skeletons"
-    return str(candidate if candidate.exists() else out_dir)
+    if not candidate.exists():
+        # A veces el zip no tiene esa carpeta intermedia
+        return str(out_dir)
+    return str(candidate)
 
 def action_id_from_filename(path: str) -> int:
     m = re.search(r"A(\d{3})", os.path.basename(path))
@@ -299,8 +305,10 @@ def run_epoch(model, loader, criterion, optimizer, train=True, device="cpu"):
     total = correct = 0
     loss_sum = 0.0
     for X, y, _ in loader:
+        # <<< GPU: Mover datos al dispositivo
         X = X.to(device, non_blocking=True).float()
         y = y.to(device, non_blocking=True)
+        
         logits = model(X)
         loss = criterion(logits, y)
         if train:
@@ -308,6 +316,7 @@ def run_epoch(model, loader, criterion, optimizer, train=True, device="cpu"):
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+        
         preds = logits.argmax(1)
         total  += y.size(0)
         correct += (preds == y).sum().item()
@@ -319,8 +328,10 @@ def evaluate_preds(model, loader, device="cpu"):
     all_y, all_p = [], []
     with torch.no_grad():
         for X, y, _ in loader:
+            # <<< GPU: Mover datos al dispositivo
             X = X.to(device).float()
             y = y.to(device)
+            
             logits = model(X)
             p = logits.argmax(1)
             all_y.extend(y.cpu().tolist())
@@ -383,15 +394,25 @@ if __name__ == "__main__":
                                     num_samples=len(sample_weights_t),
                                     replacement=True)
 
-    pin = torch.cuda.is_available()
-    # Si en tu Windows prefieres evitar workers, pon num_workers=0.
+    # <<< GPU: Detectar si hay GPU disponible
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Usando dispositivo: {device}")
+
+    # <<< GPU: Configurar pin_memory para carga rápida si hay GPU
+    pin = (device.type == 'cuda')
+    
+    # Configuración de Workers (ajusta según tu CPU)
+    # num_workers=0 es más seguro en Windows para evitar errores de multiprocesamiento
+    # Si estás en Linux, puedes subirlo a 2 o 4.
+    num_workers = 0 
+
     train_loader = DataLoader(train_ds, batch_size=16, sampler=sampler, shuffle=False,
-                              num_workers=2, pin_memory=pin, drop_last=False)
+                              num_workers=num_workers, pin_memory=pin, drop_last=False)
     test_loader  = DataLoader(test_ds,  batch_size=32, shuffle=False,
-                              num_workers=2, pin_memory=pin, drop_last=False)
+                              num_workers=num_workers, pin_memory=pin, drop_last=False)
 
     # 5) Modelo / optimizadores
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # <<< GPU: Mover modelo y pesos a GPU
     model = TinyPoseBiGRU(n_classes).to(device)
 
     criterion = nn.CrossEntropyLoss(weight=class_weights_t.to(device))
@@ -400,13 +421,21 @@ if __name__ == "__main__":
 
     # 6) Entrenamiento
     EPOCHS = 15
+    print(f"Iniciando entrenamiento por {EPOCHS} épocas...")
+    
     for ep in range(1, EPOCHS+1):
         tr_loss, tr_acc = run_epoch(model, train_loader, criterion, optimizer, True, device)
         te_loss, te_acc = run_epoch(model, test_loader,  criterion, optimizer, False, device)
         scheduler.step()
         print(f"[Ep {ep:02d}] train_loss={tr_loss:.3f} train_acc={tr_acc:.2f} | val_loss={te_loss:.3f} val_acc={te_acc:.2f}")
+        
+        # Guardar el mejor modelo (o el último) para usarlo después
+        torch.save(model.state_dict(), "best_pose_model.pth")
+
+    print("Entrenamiento finalizado. Modelo guardado en 'best_pose_model.pth'")
 
     # 7) Reporte de clasificación en el set de prueba
+    print("\nEvaluando modelo final...")
     all_y, all_p = evaluate_preds(model, test_loader, device)
     target_names = [A2TEXT.get(a, f"A{a:03d}") for a in ACTIONS]
     print("\nReporte de clasificación:\n",
@@ -431,6 +460,7 @@ if __name__ == "__main__":
     tmp_ds = NTUDataset([target_path], action2idx=ACTION2IDX, max_len=64, augment=False)
     x, y_true, _ = tmp_ds[0]
     with torch.no_grad():
+        # <<< GPU: Mover input para inferencia
         logits   = model(x.unsqueeze(0).to(device).float())
         prob     = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
         top3     = prob.argsort()[-3:][::-1]
