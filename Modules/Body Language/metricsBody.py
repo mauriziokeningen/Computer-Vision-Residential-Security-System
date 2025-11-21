@@ -12,7 +12,6 @@ import sys
 # ==========================================
 #    IMPORTACIONES DEL MÓDULO ORIGINAL
 # ==========================================
-# Importamos las clases y configuraciones necesarias de tu archivo pose.py
 try:
     from pose import (TinyPoseBiGRU, NTUDataset, make_splits, list_skeleton_files, 
                       A2TEXT, KEEP, action_id_from_filename)
@@ -23,12 +22,32 @@ except ImportError as e:
     sys.exit()
 
 # ==========================================
+#   DICCIONARIO DE TRADUCCIÓN (EN -> ES)
+# ==========================================
+# Esto asegura que las gráficas salgan en español sin modificar pose.py
+TRADUCCION_ACCIONES = {
+    "Kicking": "Patear",
+    "Hitting": "Golpear",
+    "Punching/Slapping": "Puñetazo/Bofetada",
+    "Pushing": "Empujar",
+    "Staggering": "Tambalearse",
+    "Falling": "Caerse",
+    "Hand waving": "Saludar",
+    "Pointing": "Señalar",
+    # Variantes (si las hubiera en tu dataset)
+    "Kicking (var)": "Patear (var)",
+    "Hand waving (v2)": "Saludar (v2)",
+    "Pointing (var)": "Señalar (var)"
+}
+
+def traducir_lista(lista_nombres):
+    """Traduce una lista de nombres en inglés a español usando el diccionario."""
+    return [TRADUCCION_ACCIONES.get(nombre, nombre) for nombre in lista_nombres]
+
+# ==========================================
 #      FUNCIÓN DE EVALUACIÓN
 # ==========================================
 def evaluate_preds(model, loader, device="cpu"):
-    """
-    Ejecuta inferencia sobre todo el dataloader y devuelve etiquetas reales y predichas.
-    """
     model.eval()
     all_y, all_p = [], []
     print(f"Iniciando evaluación en {len(loader)} lotes...")
@@ -47,10 +66,13 @@ def evaluate_preds(model, loader, device="cpu"):
     return np.array(all_y), np.array(all_p)
 
 # ==========================================
-#        LÓGICA DE GRAFICACIÓN
+#        LÓGICA DE GRAFICACIÓN (MODIFICADA)
 # ==========================================
-def plot_pose_metrics(y_true, y_pred, class_names):
+def plot_pose_metrics(y_true, y_pred, class_names_eng):
     sns.set_style("whitegrid")
+    
+    # 1. Traducir nombres al español para la gráfica
+    class_names_es = traducir_lista(class_names_eng)
     
     # Calcular métricas globales
     acc = accuracy_score(y_true, y_pred)
@@ -62,41 +84,50 @@ def plot_pose_metrics(y_true, y_pred, class_names):
     # --- 1. MATRIZ DE CONFUSIÓN (Heatmap Normalizado) ---
     cm = confusion_matrix(y_true, y_pred)
     
-    # Normalizar para ver porcentajes (Recall) - Evitar división por cero
     with np.errstate(divide='ignore', invalid='ignore'):
         cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
     cm_norm = np.nan_to_num(cm_norm)
 
-    sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='Reds', ax=axs[0],
-                xticklabels=class_names, yticklabels=class_names)
+    # >>> AQUÍ SE CAMBIAN LOS COLORES Y TAMAÑO DE FUENTE <<<
+    sns.heatmap(cm_norm, 
+                annot=True,            # Mostrar números
+                fmt='.2f',             # Formato de 2 decimales
+                cmap='Reds',          # COLOR: 'Blues', 'Reds', 'Greens', 'Oranges', 'Purples'
+                ax=axs[0],
+                xticklabels=class_names_es, 
+                yticklabels=class_names_es,
+                annot_kws={"size": 10, "weight": "bold"}) # TAMAÑO y grosor de los números
+    
     axs[0].set_title('Matriz de Confusión Normalizada (Recall por Acción)')
     axs[0].set_ylabel('Acción Real')
     axs[0].set_xlabel('Acción Predicha')
     axs[0].tick_params(axis='x', rotation=45)
     
     # --- 2. RENDIMIENTO POR CLASE (F1-Score) ---
-    report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True)
+    # Usamos los nombres en inglés para extraer del reporte, pero graficamos en español
+    report = classification_report(y_true, y_pred, target_names=class_names_eng, output_dict=True)
     
-    classes_plot = []
+    classes_plot_es = []
     f1_scores = []
     
     for k, v in report.items():
-        if k in class_names:
-            classes_plot.append(k)
+        if k in class_names_eng:
+            # Traducir el nombre al español para la barra
+            nombre_es = TRADUCCION_ACCIONES.get(k, k)
+            classes_plot_es.append(nombre_es)
             f1_scores.append(v['f1-score'])
             
     # Ordenar por F1 para mejor visualización
     if len(f1_scores) > 0:
         sorted_indices = np.argsort(f1_scores)[::-1]
-        classes_plot = [classes_plot[i] for i in sorted_indices]
+        classes_plot_es = [classes_plot_es[i] for i in sorted_indices]
         f1_scores = [f1_scores[i] for i in sorted_indices]
     
-    # Colorear diferente las clases críticas de seguridad
-    # Buscamos palabras clave en inglés o español según tu diccionario A2TEXT
-    critical_keywords = ['Kick', 'Punch', 'Hit', 'Push', 'Golpe', 'Patada', 'Empujón']
-    colors = ['#d62728' if any(x in c for x in critical_keywords) else '#1f77b4' for c in classes_plot]
+    # Colorear diferente las clases críticas (Buscando en español)
+    critical_keywords = ['Patear', 'Golpe', 'Puñetazo', 'Empujón', 'Empujar']
+    colors = ['#d62728' if any(x in c for x in critical_keywords) else '#1f77b4' for c in classes_plot_es]
     
-    sns.barplot(x=f1_scores, y=classes_plot, palette=colors, ax=axs[1])
+    sns.barplot(x=f1_scores, y=classes_plot_es, palette=colors, ax=axs[1])
     axs[1].set_xlim(0, 1.0)
     axs[1].axvline(0.8, color='orange', linestyle='--', label='Objetivo TT1 (0.80)')
     axs[1].set_title('F1-Score por Tipo de Acción (Rojo = Crítico)')
@@ -107,7 +138,6 @@ def plot_pose_metrics(y_true, y_pred, class_names):
     output_file = 'pose_validation_report.png'
     plt.savefig(output_file)
     print(f"\n--- [RESULTADOS] Gráfica guardada como: {output_file} ---")
-    # plt.show() # Descomenta si quieres que se abra la ventana
 
 # ==========================================
 #        BLOQUE PRINCIPAL
@@ -115,129 +145,72 @@ def plot_pose_metrics(y_true, y_pred, class_names):
 if __name__ == "__main__":
     print("\n--- Iniciando Reporte de Métricas de Pose ---")
     
-    # ---------------------------------------------------------
-    # 1. GESTIÓN DE DATOS (AUTO-REPARACIÓN)
-    # ---------------------------------------------------------
+    # 1. GESTIÓN DE DATOS
     current_dir = os.path.dirname(os.path.abspath(__file__))
     dataset_root = os.path.join(current_dir, "NTU_dataset")
     skeletons_dir = os.path.join(dataset_root, "nturgb+d_skeletons")
     zip_filename = "nturgbd_skeletons_s001_to_s017.zip"
     zip_path = os.path.join(current_dir, zip_filename)
 
-    print(f"Directorio de trabajo: {current_dir}")
-
-    # Lógica para encontrar DATA_DIR
     DATA_DIR = None
-    
-    # Caso A: Los datos ya están descomprimidos
     if os.path.exists(skeletons_dir) and len(os.listdir(skeletons_dir)) > 0:
         DATA_DIR = skeletons_dir
-        print(f"[INFO] Datos detectados en carpeta existente: {DATA_DIR}")
-    
-    # Caso B: No están descomprimidos, buscar ZIP
+        print(f"[INFO] Datos detectados: {DATA_DIR}")
     else:
-        print("[ADVERTENCIA] No se encontraron datos descomprimidos. Buscando archivo ZIP...")
-        
+        print("[ADVERTENCIA] Buscando ZIP...")
         if os.path.exists(zip_path):
-            print(f"[ARCHIVO] ZIP encontrado: {zip_path}")
-            print("[ESTADO] Descomprimiendo... (Esto puede tardar unos minutos, por favor espere)")
-            
+            print(f"[ARCHIVO] ZIP encontrado. Descomprimiendo...")
             try:
                 with zipfile.ZipFile(zip_path, 'r') as z:
-                    # Filtrar solo archivos .skeleton para no llenar el disco de basura si hay otros archivos
                     members = [m for m in z.namelist() if m.endswith(".skeleton")]
-                    if not members:
-                          print("[ERROR] El ZIP no contiene archivos .skeleton")
-                          sys.exit()
-                    
-                    # Extraer
+                    if not members: sys.exit("[ERROR] ZIP sin skeletons")
                     z.extractall(dataset_root, members=members)
-                
                 DATA_DIR = skeletons_dir
-                print(f"[INFO] Extracción completada en: {DATA_DIR}")
             except Exception as e:
-                print(f"[ERROR] Fallo al descomprimir: {e}")
+                print(f"[ERROR] {e}")
                 sys.exit()
         else:
-            print("\n[ERROR CRÍTICO] FALTAN LOS DATOS")
-            print(f"1. La carpeta de datos '{skeletons_dir}' está vacía o no existe.")
-            print(f"2. Y no se encontró el archivo '{zip_filename}' en la carpeta actual.")
-            print(f"   Ruta esperada del ZIP: {zip_path}")
-            print(">>> SOLUCIÓN: Asegúrate de que el archivo .zip esté junto a metricsBody.py")
-            sys.exit()
+            sys.exit("[ERROR CRÍTICO] No hay datos ni ZIP.")
 
-    # ---------------------------------------------------------
-    # 2. PREPARACIÓN DE DATASETS
-    # ---------------------------------------------------------
-    print("Listando archivos...")
+    # 2. PREPARACIÓN
     all_files = list_skeleton_files(DATA_DIR)
-    
-    if len(all_files) == 0:
-        print("[ERROR] Se encontró la carpeta pero no hay archivos .skeleton válidos dentro.")
-        sys.exit()
-
-    # Reconstruir los mapeos de índices (Misma lógica que entrenamiento)
     present_actions = sorted({action_id_from_filename(f) for f in all_files} & KEEP)
     ACTION2IDX  = {a:i for i,a in enumerate(present_actions)}
-    
-    # Obtener solo los archivos de TEST (usando la misma semilla 42 para consistencia)
     _, test_files = make_splits(all_files, ACTION2IDX, test_size=0.2)
     
-    print(f"Archivos de Test encontrados: {len(test_files)}")
+    print(f"Archivos de Test: {len(test_files)}")
     
-    # Crear el DataLoader de Test
     test_ds = NTUDataset(test_files, action2idx=ACTION2IDX, max_len=64, augment=False)
-    # num_workers=0 para máxima compatibilidad en Windows
     test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, num_workers=0) 
     
-    # ---------------------------------------------------------
-    # 3. CARGA DEL MODELO
-    # ---------------------------------------------------------
+    # 3. MODELO
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Usando dispositivo: {device}")
+    model = TinyPoseBiGRU(len(present_actions)).to(device)
+    MODEL_PATH = os.path.join(current_dir, "best_pose_model.pth")
     
-    n_classes = len(present_actions)
-    model = TinyPoseBiGRU(n_classes).to(device)
-    
-    MODEL_PATH = "best_pose_model.pth"
-    
-    # Buscar el modelo en la carpeta actual
-    model_full_path = os.path.join(current_dir, MODEL_PATH)
-    
-    if os.path.exists(model_full_path):
-        print(f"Cargando pesos desde {model_full_path}...")
-        try:
-            model.load_state_dict(torch.load(model_full_path, map_location=device))
-            print("[INFO] Modelo cargado correctamente.")
-        except Exception as e:
-            print(f"[ERROR] Fallo al cargar los pesos del modelo: {e}")
-            print("Es posible que la arquitectura del modelo haya cambiado desde el entrenamiento.")
-            sys.exit()
+    if os.path.exists(MODEL_PATH):
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        print("[INFO] Modelo cargado.")
     else:
-        print(f"[ADVERTENCIA] No se encontró {MODEL_PATH}.")
-        print("Asegúrate de haber corrido pose.py primero para entrenar y guardar el modelo.")
-        sys.exit()
+        sys.exit("[ERROR] No se encontró 'best_pose_model.pth'. Entrena primero.")
 
-    # ---------------------------------------------------------
-    # 4. EJECUCIÓN Y REPORTE
-    # ---------------------------------------------------------
+    # 4. EJECUCIÓN
     all_y, all_p = evaluate_preds(model, test_loader, device)
     
-    # Generar Nombres para las Gráficas
-    ordered_names = []
-    for i in range(n_classes):
-        # Buscar qué acción original corresponde a este índice
+    # Nombres en Inglés (Originales del modelo)
+    ordered_names_eng = []
+    for i in range(len(present_actions)):
         original_action_id = [k for k, v in ACTION2IDX.items() if v == i][0]
-        # Usar el diccionario A2TEXT importado de pose.py
-        ordered_names.append(A2TEXT.get(original_action_id, f"Act {original_action_id}"))
+        ordered_names_eng.append(A2TEXT.get(original_action_id, f"Act {original_action_id}"))
 
-    # Generar Reporte Visual
-    plot_pose_metrics(all_y, all_p, ordered_names)
+    # 5. REPORTE GRÁFICO (Traduce internamente a Español)
+    plot_pose_metrics(all_y, all_p, ordered_names_eng)
     
-    # Reporte de Texto
+    # 6. REPORTE TEXTO (En Español)
     print("\n" + "="*60)
     print("      REPORTE DE CINEMÁTICA - TINYPOSE BiGRU")
     print("="*60)
-    # digits=4 para ver más precisión
-    print(classification_report(all_y, all_p, target_names=ordered_names, digits=4))
+    # Creamos lista de nombres en español para el reporte de texto
+    ordered_names_es = traducir_lista(ordered_names_eng)
+    print(classification_report(all_y, all_p, target_names=ordered_names_es, digits=4))
     print("="*60)
