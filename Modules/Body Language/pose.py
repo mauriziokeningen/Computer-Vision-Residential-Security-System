@@ -10,7 +10,6 @@ from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 
-# --------------------- Configuración local ---------------------
 ZIP_NAME       = "nturgbd_skeletons_s001_to_s017.zip"  
 EXTRACT_DIR    = "NTU_dataset"                         
 LIMIT_N_FILES  = 10000                                 
@@ -22,15 +21,14 @@ torch.backends.cudnn.benchmark = False
 torch.set_num_threads(1)  
 
 DATA_DIR = None
-TARGET_FILE = None   # Ej: "S001C001P001R001A024.skeleton" o None para elegir aleatorio del test
+TARGET_FILE = None   
 
-# --------------------- Clases de seguridad ---------------------
 ALLOWED_ACTIONS = {
     24, 26, 27, 28, 41, 42,     # kick/hit/punch/push/staggering/falling
-    63, 65, 66, 67, 80, 81,     # variantes
-    117, 119, 120               # variantes
+    63, 65, 66, 67, 80, 81,     # variants
+    117, 119, 120               # variants
 }
-OPTIONAL_ACTIONS = {23, 62, 116, 30, 69, 85}  # saludar/pointing (opcionales)
+OPTIONAL_ACTIONS = {23, 62, 116, 30, 69, 85}  
 KEEP = ALLOWED_ACTIONS | OPTIONAL_ACTIONS
 
 A2TEXT = {
@@ -46,49 +44,42 @@ A2TEXT = {
 # Grafo NTU-25
 NTU25_EDGES = [
     (0,1),(1,20),(20,2),(2,3),                 # Columna/neck/head
-    (20,4),(4,5),(5,6),(6,7),(7,21),(7,22),    # Brazo izquierdo + tips
-    (20,8),(8,9),(9,10),(10,11),(11,23),(11,24),# Brazo derecho + tips
-    (0,12),(12,13),(13,14),(14,15),            # Pierna izquierda
-    (0,16),(16,17),(17,18),(18,19)             # Pierna derecha
+    (20,4),(4,5),(5,6),(6,7),(7,21),(7,22),    # Left arm + tips
+    (20,8),(8,9),(9,10),(10,11),(11,23),(11,24),# Right arm + tips
+    (0,12),(12,13),(13,14),(14,15),            # Left leg
+    (0,16),(16,17),(17,18),(18,19)             # Right leg
 ]
 
-# --------------------- Utilidades ---------------------
 def ensure_extracted_from_zip():
-    """
-    Extrae del ZIP local los .skeleton (hasta LIMIT_N_FILES si se definió).
-    Deja todo en EXTRACT_DIR y retorna la ruta base que contiene los .skeleton.
-    """
+    
     zip_path = Path(__file__).parent / ZIP_NAME
     out_dir  = Path(__file__).parent / EXTRACT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not zip_path.exists():
-        # Intenta buscar en el directorio actual si __file__ falla
         zip_path = Path(ZIP_NAME)
         if not zip_path.exists():
-             raise FileNotFoundError(f"No se encontró el ZIP: {zip_path}")
+             raise FileNotFoundError(f"Not found in thr ZIP file: {zip_path}")
 
-    # Detectar si ya hay suficientes archivos extraídos
     existing = list(out_dir.rglob("*.skeleton"))
     if LIMIT_N_FILES is not None and len(existing) >= LIMIT_N_FILES:
-        print(f"✅ Ya hay {len(existing)} skeletons en {out_dir}. No se vuelve a extraer.")
+        print(f"There are already {len(existing)} skeletons in {out_dir}.")
     elif LIMIT_N_FILES is None and len(existing) > 0:
-        print(f"✅ Ya hay skeletons en {out_dir}. No se vuelve a extraer.")
+        print(f"There are already skeletons in {out_dir}.")
     else:
-        print("⏳ Extrayendo .skeleton desde el ZIP local...")
+        print("Extracting .skeleton from local ZIP...")
         with zipfile.ZipFile(zip_path, 'r') as z:
             members = [m for m in z.namelist() if m.endswith(".skeleton")]
             if LIMIT_N_FILES is not None:
                 members = members[:LIMIT_N_FILES]
             if not members:
-                raise RuntimeError("No se encontraron .skeleton dentro del ZIP.")
+                raise RuntimeError("No .skeleton were found inside the ZIP file.")
             z.extractall(out_dir, members=members)
-        print(f"✅ Archivos extraídos en: {out_dir}")
+        print(f"Files extracted to: {out_dir}")
 
-    # DATA_DIR esperado
+    # DATA_DIR 
     candidate = out_dir / "nturgb+d_skeletons"
     if not candidate.exists():
-        # A veces el zip no tiene esa carpeta intermedia
         return str(out_dir)
     return str(candidate)
 
@@ -103,7 +94,6 @@ def list_skeleton_files(data_dir: str):
 
 # --------------------- Parser NTU ---------------------
 def read_ntu_skeleton(path, max_persons=2, n_joints=25):
-    """Devuelve x[T,P,25,3] con hasta `max_persons` y coords x,y,z."""
     with open(path, "r") as f:
         lines = [ln.strip() for ln in f if ln.strip() != ""]
     cursor = 0
@@ -121,10 +111,8 @@ def read_ntu_skeleton(path, max_persons=2, n_joints=25):
                 x, y, z = map(float, vals[:3])
                 seq[t, _, j] = (x, y, z)
                 cursor += 1
-            # Joints extra (si los hay)
             for _skip in range(max(0, n_j - n_joints)):
                 cursor += 1
-        # Cuerpos extra (si los hay)
         for _ in range(max(0, n_bodies - nb)):
             cursor += 1  # body info
             n_j_skip = int(lines[cursor]); cursor += 1
@@ -146,14 +134,12 @@ def active_person_index(x):
     best = int(np.argmax(scores)) if len(scores) else 0
     return best if scores[best] != -np.inf else 0
 
-# ---------- Normalización ----------
 def center_scale(x):
-    """Centra en pelvis(0) y escala por mediana distancia hombros(4,8)."""
     mask = valid_frame_mask(x)
     if not mask.any():
         return x.copy()
     x = x.copy()
-    base = x[..., 0, :]                   # pelvis
+    base = x[..., 0, :]                   
     x = x - base[..., None, :]
     L = np.linalg.norm(x[..., 4, :] - x[..., 8, :], axis=-1)  # [T,1]
     L_valid = L[mask]
@@ -182,7 +168,6 @@ def preprocess(x):
     x = standardize_per_sample(x)
     return x
 
-# ---------------------- Aumentos ----------------------
 def aug_yaw_scale(x, max_deg=10.0, scale_jitter=0.05):
     if np.abs(x).sum() == 0:
         return x
@@ -223,7 +208,7 @@ def best_frame_safe(raw1: np.ndarray) -> int:
 class NTUDataset(Dataset):
     def __init__(self, files, action2idx, max_len=64, augment=True):
         self.files      = files
-        self.action2idx = action2idx  # <<--- evita globals en workers
+        self.action2idx = action2idx  
         self.max_len    = max_len
         self.augment    = augment
 
@@ -236,7 +221,6 @@ class NTUDataset(Dataset):
         x = raw[:, pidx:pidx+1]                      # [T,1,25,3]
         T = x.shape[0]
 
-        # recorte/padding temporal con jitter
         if T >= self.max_len:
             start = 0
             if self.augment:
@@ -245,7 +229,6 @@ class NTUDataset(Dataset):
         else:
             x = pad_with_last_valid(x, self.max_len)
 
-        # aumentos geométricos
         if self.augment:
             x = aug_yaw_scale(x)
 
@@ -260,7 +243,7 @@ class NTUDataset(Dataset):
         try:
             x = self._load(path)
         except Exception:
-            x = np.zeros((64,25,3,1), dtype=np.float32)  # fallback defensivo
+            x = np.zeros((64,25,3,1), dtype=np.float32)  
         return torch.from_numpy(x), torch.tensor(y, dtype=torch.long), path
 
 def make_splits(files, action2idx, test_size=0.2):
@@ -274,7 +257,6 @@ def make_splits(files, action2idx, test_size=0.2):
         X_tr, X_te = train_test_split(files, test_size=test_size, random_state=SEED, shuffle=True)
     return X_tr, X_te
 
-# ---------------------- Modelo ----------------------
 class TinyPoseBiGRU(nn.Module):
     def __init__(self, n_classes):
         super().__init__()
@@ -299,13 +281,11 @@ class TinyPoseBiGRU(nn.Module):
         h = self.drop(h)
         return self.head(h)
 
-# ---------------------- Entrenamiento / Evaluación ----------------------
 def run_epoch(model, loader, criterion, optimizer, train=True, device="cpu"):
     model.train(train)
     total = correct = 0
     loss_sum = 0.0
     for X, y, _ in loader:
-        # <<< GPU: Mover datos al dispositivo
         X = X.to(device, non_blocking=True).float()
         y = y.to(device, non_blocking=True)
         
@@ -328,7 +308,6 @@ def evaluate_preds(model, loader, device="cpu"):
     all_y, all_p = [], []
     with torch.no_grad():
         for X, y, _ in loader:
-            # <<< GPU: Mover datos al dispositivo
             X = X.to(device).float()
             y = y.to(device)
             
@@ -342,11 +321,9 @@ def evaluate_preds(model, loader, device="cpu"):
 # MAIN
 # ============================================================
 if __name__ == "__main__":
-    # 1) Extraer del ZIP local (si hace falta) y fijar DATA_DIR
     DATA_DIR = ensure_extracted_from_zip()
     print("DATA_DIR =", DATA_DIR)
 
-    # 2) Descubrir archivos y clases presentes
     all_files = list_skeleton_files(DATA_DIR)
     if TARGET_FILE is not None:
         tgt = os.path.join(DATA_DIR, TARGET_FILE)
@@ -355,20 +332,19 @@ if __name__ == "__main__":
 
     present_actions = sorted({action_id_from_filename(f) for f in all_files} & KEEP)
     if len(present_actions) == 0:
-        raise RuntimeError("No hay acciones válidas en los archivos filtrados. Revisa DATA_DIR y KEEP.")
+        raise RuntimeError("There are no valid actions in the filtered files. Check DATA_DIR and KEEP.")
     ACTIONS     = present_actions
     ACTION2IDX  = {a:i for i,a in enumerate(ACTIONS)}
     IDX2ACTION  = {i:a for a,i in ACTION2IDX.items()}
 
-    print("Acciones presentes:", {a: A2TEXT.get(a, f"A{a:03d}") for a in ACTIONS})
-    print("#Archivos filtrados:", len(all_files))
+    print("Present actions:", {a: A2TEXT.get(a, f"A{a:03d}") for a in ACTIONS})
+    print("#Filtered files:", len(all_files))
 
     # 3) Train / Test split
     train_files, test_files = make_splits(all_files, ACTION2IDX, test_size=0.2)
     train_ds = NTUDataset(train_files, action2idx=ACTION2IDX, max_len=64, augment=True)
     test_ds  = NTUDataset(test_files,  action2idx=ACTION2IDX, max_len=64, augment=False)
 
-    # 4) Pesos por clase y sampler balanceado
     n_classes = len(ACTIONS)
     counts = np.zeros(n_classes, dtype=np.int64)
     for p in train_files:
@@ -394,16 +370,12 @@ if __name__ == "__main__":
                                     num_samples=len(sample_weights_t),
                                     replacement=True)
 
-    # <<< GPU: Detectar si hay GPU disponible
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Usando dispositivo: {device}")
+    print(f"Using device: {device}")
 
-    # <<< GPU: Configurar pin_memory para carga rápida si hay GPU
     pin = (device.type == 'cuda')
     
-    # Configuración de Workers (ajusta según tu CPU)
-    # num_workers=0 es más seguro en Windows para evitar errores de multiprocesamiento
-    # Si estás en Linux, puedes subirlo a 2 o 4.
+
     num_workers = 0 
 
     train_loader = DataLoader(train_ds, batch_size=16, sampler=sampler, shuffle=False,
@@ -411,17 +383,15 @@ if __name__ == "__main__":
     test_loader  = DataLoader(test_ds,  batch_size=32, shuffle=False,
                               num_workers=num_workers, pin_memory=pin, drop_last=False)
 
-    # 5) Modelo / optimizadores
-    # <<< GPU: Mover modelo y pesos a GPU
+
     model = TinyPoseBiGRU(n_classes).to(device)
 
     criterion = nn.CrossEntropyLoss(weight=class_weights_t.to(device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=15)
 
-    # 6) Entrenamiento
     EPOCHS = 15
-    print(f"Iniciando entrenamiento por {EPOCHS} épocas...")
+    print(f"Starting training for {EPOCHS} epochs...")
     
     for ep in range(1, EPOCHS+1):
         tr_loss, tr_acc = run_epoch(model, train_loader, criterion, optimizer, True, device)
@@ -432,18 +402,16 @@ if __name__ == "__main__":
         # Guardar el mejor modelo (o el último) para usarlo después
         torch.save(model.state_dict(), "best_pose_model.pth")
 
-    print("Entrenamiento finalizado. Modelo guardado en 'best_pose_model.pth'")
+    print("Training completed. Model saved as 'best_pose_model.pth'")
 
-    # 7) Reporte de clasificación en el set de prueba
-    print("\nEvaluando modelo final...")
+    print("\nEvaluating final model...")
     all_y, all_p = evaluate_preds(model, test_loader, device)
     target_names = [A2TEXT.get(a, f"A{a:03d}") for a in ACTIONS]
-    print("\nReporte de clasificación:\n",
+    print("\nClassification report:\n",
           classification_report(all_y, all_p, digits=3, target_names=target_names))
 
-    # 8) Predicción + visualización en un archivo del test
     import random as _r
-    assert len(test_files) > 0, "No hay archivos de test."
+    assert len(test_files) > 0, "There are no test files."
     if TARGET_FILE is None:
         sysrand = _r.SystemRandom()
         target = os.path.basename(sysrand.choice(test_files))
@@ -451,31 +419,28 @@ if __name__ == "__main__":
         target = os.path.basename(TARGET_FILE)
 
     target_path = os.path.join(DATA_DIR, target)
-    print("\nArchivo objetivo (demo):", os.path.basename(target_path))
+    print("\nTarjet file (demo):", os.path.basename(target_path))
 
     true_A    = action_id_from_filename(target_path)
     true_text = A2TEXT.get(true_A, f"A{true_A:03d}")
-    print(f"Real: A{true_A:03d} ({true_text})")
+    print(f"Actual: A{true_A:03d} ({true_text})")
 
     tmp_ds = NTUDataset([target_path], action2idx=ACTION2IDX, max_len=64, augment=False)
     x, y_true, _ = tmp_ds[0]
     with torch.no_grad():
-        # <<< GPU: Mover input para inferencia
         logits   = model(x.unsqueeze(0).to(device).float())
         prob     = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
         top3     = prob.argsort()[-3:][::-1]
         pred_idx = int(top3[0])
 
-    # asegurar mapeo actualizado
     IDX2ACTION = {i:a for a,i in ACTION2IDX.items()}
     pred_A    = IDX2ACTION[pred_idx]
     pred_text = A2TEXT.get(pred_A, f"A{pred_A:03d}")
-    print("Top-3 predicciones:")
+    print("Top-3 predictions:")
     for k, i in enumerate(top3):
         a = IDX2ACTION[i]
         print(f"  {k+1}) idx={i:2d}  A{a:03d}  {A2TEXT.get(a, str(a))}  p={prob[i]:.3f}")
 
-    # Visualizar un frame representativo
     raw  = read_ntu_skeleton(target_path)
     pidx = active_person_index(raw)
     raw1 = raw[:, pidx:pidx+1]
