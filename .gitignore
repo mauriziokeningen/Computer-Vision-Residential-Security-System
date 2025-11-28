@@ -1,22 +1,61 @@
-Modules/Body Language/.venv2/
-Modules/Facial Recognition/.venv1/
-.venv/
-venv/
-env/
-venv3/
+# =======================================================
+# 1. GENERATED FILES (DO NOT COMMIT)
+# =======================================================
 
-__pycache__/
+# Dependencies and Cache Files (The main problem areas)
+# Node.js (CRITICAL: Saves gigabytes of space)
+/frontend/node_modules
+/node_modules
+
+# Python cache and temporary environments
+/backend/__pycache__/
 *.pyc
 *.pyo
-*.pyd
+.pytest_cache/
+.mypy_cache/
 
-Modules/Body Language/model/
-Modules/Facial Recognition/photos/
+# Virtual Environments (General/Local)
+/venv/
+/env/
+.venv/
+/venv2/
+/venv3/
 
-*.log
+# Frontend Build Output
+/frontend/dist
 
+# =======================================================
+# 2. LOCAL DATA AND SECRETS
+# =======================================================
+
+# Environment Variables and Secrets
 .env
 .env.*
 
+# Logs and local databases
+*.log
+/logs
+
+# =======================================================
+# 3. LARGE DATASETS & TRAINING OUTPUT (CRITICAL)
+# =======================================================
+
+# TT1 Datasets (These are huge and should use DVC, not Git)
+# These files should NOT be in the Git repository.
+backend/tests/Facial Recognition/mis_fotos
+backend/tests/Facial Recognition/data
+backend/tests/Facial Recognition/lfw-deepfunneled
+backend/tests/Body Language/NTU_dataset/
 gun-and-knife-dataset/
-**/.DS_Store
+backend/tests/Body Language/nturgbd_skeletons_s001_to_s017.zip
+
+# AI Models and Weights
+Modules/*/model/
+backend/tests/Facial Recognition/face_rec_env/
+
+
+# =======================================================
+# 4. OS/IDE Files
+# =======================================================
+.DS_Store
+Thumbs.db
