@@ -19,3 +19,4 @@ Modules/Facial Recognition/photos/
 .env.*
 
 gun-and-knife-dataset/
+**/.DS_Store
