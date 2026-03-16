@@ -1,23 +1,29 @@
-# --- AI AND VISION FRAMEWORK ---
-# TensorFlow is the foundation for Keras and DeepFace
-tensorflow==2.20.0
-keras==3.11.3
-deepface==0.0.95
-mtcnn==1.0.0              # DeepFace dependency
-retina-face==0.0.17       # DeepFace dependency
-opencv-python==4.12.0.88
-numpy==2.2.6
+# --- Inter-Process Communication & Core ---
+pyzmq==25.1.2
+numpy==1.26.4
+opencv-python==4.9.0.80
 pillow==12.0.0
 
-# --- BACKEND API (ORCHESTRATOR - Flask TT1) ---
-# *Note: We are using Flask since it was the TT1 framework.*
+# --- Deep Learning Frameworks (GPU support) ---
+# Nota: TensorFlow 2.15 es la versión más estable con CUDA 12.x
+tensorflow==2.16.2
+tf-keras==2.16.0
+keras>=3.0.0
+
+# --- Computer Vision AI Models ---
+deepface==0.0.95
+ultralytics==8.1.24
+mtcnn==1.0.0
+retina-face==0.0.17
+
+# --- Backend API (Orchestrator - Flask TT1) ---
 Flask==3.1.2
 flask-cors==6.0.1
-gunicorn==23.0.0          # Production server for Flask
+gunicorn==23.0.0
 requests==2.32.5
 
-# --- DATABASE AND UTILITIES ---
-psycopg2-binary==2.9.11   # PostgreSQL connection
-pandas==2.3.3             # For data handling and logs
-tqdm==4.67.1              # Progress bars
-rich==14.2.0              # Enhanced logging
+# --- Database and Utilities ---
+psycopg2-binary==2.9.11
+pandas==2.3.3
+tqdm==4.67.1
+rich==14.2.0

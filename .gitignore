@@ -15,11 +15,9 @@
 .mypy_cache/
 
 # Virtual Environments (General/Local)
-/venv/
-/env/
+venv/
+env/
 .venv/
-/venv2/
-/venv3/
 
 # Frontend Build Output
 /frontend/dist
@@ -42,7 +40,7 @@
 
 # TT1 Datasets (These are huge and should use DVC, not Git)
 # These files should NOT be in the Git repository.
-backend/tests/Facial Recognition/mis_fotos
+backend/mis_fotos
 backend/tests/Facial Recognition/data
 backend/tests/Facial Recognition/lfw-deepfunneled
 backend/tests/Body Language/NTU_dataset/
@@ -52,6 +50,7 @@ backend/tests/Body Language/nturgbd_skeletons_s001_to_s017.zip
 # AI Models and Weights
 Modules/*/model/
 backend/tests/Facial Recognition/face_rec_env/
+backend/referencia_mauricio.npy
 
 
 # =======================================================
@@ -59,3 +58,4 @@ backend/tests/Facial Recognition/face_rec_env/
 # =======================================================
 .DS_Store
 Thumbs.db
+.vscode/
