@@ -60,3 +60,4 @@ def close_pool() -> None:
     if _pool and not _pool.closed:
         _pool.closeall()
         logger.info("Database connection pool closed.")
+    _pool = None
