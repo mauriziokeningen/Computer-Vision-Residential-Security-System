@@ -24,6 +24,8 @@ pydantic-settings==2.2.1
 
 # --- Database and Utilities ---
 psycopg2-binary==2.9.11
+SQLAlchemy==2.0.28
+python-dotenv==1.0.1
 pandas==2.3.3
 tqdm==4.67.1
 rich==14.2.0
