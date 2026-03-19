@@ -1,4 +1,7 @@
 services:
+  # ==========================================
+  # 1. DATABASE (Analytical Brain)
+  # ==========================================
   db:
     image: pgvector/pgvector:pg16
     container_name: tt2_postgres
@@ -10,5 +13,27 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # Inyecta tu archivo SQL dentro de la carpeta mágica de inicialización de Postgres
       - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # ==========================================
+  # 2. OBJECT STORAGE (Evidence Vault)
+  # ==========================================
+  minio:
+    image: minio/minio:latest
+    container_name: tt2_minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123  # In production, this should be injected via a .env file
+    ports:
+      - "9000:9000"     # S3 API port (For Python backend communication)
+      - "9001:9001"     # Web Console port (For manual administration)
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+# ==========================================
+# PERSISTENT VOLUMES
+# ==========================================
+volumes:
+  minio_data:
