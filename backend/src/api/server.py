@@ -1,18 +1,7 @@
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from src.api.routes.cameras import router as cameras_router
-from src.utils.database import close_pool
-
-
-# --- Application Lifecycle ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manages startup and shutdown events for the application."""
-    yield
-    # Shutdown: release all database connections
-    close_pool()
 
 
 # Initialize the application with enterprise-grade metadata
@@ -22,7 +11,6 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/api/docs",   # Custom route for Swagger UI documentation
     redoc_url="/api/redoc",  # Alternative route for ReDoc documentation
-    lifespan=lifespan,
 )
 
 # --- Register Routers ---
