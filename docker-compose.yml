@@ -1,0 +1,14 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: tt2_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: security_db
+    ports:
+      - "5432:5432"
+    volumes:
+      # Inyecta tu archivo SQL dentro de la carpeta mágica de inicialización de Postgres
+      - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/init.sql
