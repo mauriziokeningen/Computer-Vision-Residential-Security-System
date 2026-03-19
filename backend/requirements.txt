@@ -29,4 +29,4 @@ python-dotenv==1.0.1
 pandas==2.3.3
 tqdm==4.67.1
 rich==14.2.0
-requests==2.32.5  # Moved requests here because it is always useful for test scripts
+requests==2.32.5  #Moved requests here because it is always useful for test scripts
