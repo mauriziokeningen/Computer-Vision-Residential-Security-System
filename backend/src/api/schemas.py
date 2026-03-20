@@ -34,17 +34,16 @@ class CameraResponse(BaseModel):
 # ==========================================
 # PERSON SCHEMAS
 # ==========================================
+# Reemplaza SOLO la parte de PERSON SCHEMAS en tu schemas.py
 class PersonBase(BaseModel):
-    name: str = Field(..., example="Mauricio", description="Full name of the enrolled person")
+    full_name: str = Field(..., example="Mauricio", description="Full name")
+    person_type: str = Field(..., example="RESIDENT", description="Tipo (RESIDENT, VISITOR, STAFF)")
 
 class PersonCreate(PersonBase):
-    """Required fields to enroll a person."""
     pass
 
 class PersonResponse(PersonBase):
-    """Response schema for enrolled persons."""
-    id: int
-    face_encoding: Optional[str] = None
+    id: UUID
     created_at: datetime
 
     model_config = {"from_attributes": True}

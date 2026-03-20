@@ -15,8 +15,18 @@ def enroll_person(person: PersonCreate, db: Session = Depends(get_db)):
     """
     Registra a una nueva persona en el sistema.
     """
+
+    # Truco de Python: [0.0] * 512 crea una lista de 512 ceros automáticamente.
+    # Luego str() lo convierte en texto para que PostgreSQL lo acepte.
+    dummy_vector = str([0.0] * 512)
+
     # 1. Creamos el objeto del modelo de base de datos usando los datos validados del esquema
-    db_person = Person(name=person.name)
+    db_person = Person(
+        full_name=person.full_name, 
+        person_type=person.person_type,
+        # OJO: En tu SQL face_embedding dice "NOT NULL", le pasamos un texto dummy para que no explote
+        face_embedding=dummy_vector
+    )
     
     # 2. Lo añadimos a la sesión y guardamos en PostgreSQL
     db.add(db_person)
