@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from src.api.routes.cameras import router as cameras_router
 from src.api.routes.persons import router as persons_router
 from src.api.routes.evidence import router as evidence_router
+from src.api.routes.alerts import router as alerts_router
 from src.utils.s3_client import ensure_bucket_exists
 
 
@@ -31,6 +32,7 @@ app = FastAPI(
 app.include_router(cameras_router, prefix="/api")
 app.include_router(persons_router, prefix="/api")
 app.include_router(evidence_router, prefix="/api")
+app.include_router(alerts_router, prefix="/api")
 
 
 @app.get("/health", tags=["System"])

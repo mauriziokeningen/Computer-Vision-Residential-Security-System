@@ -3,11 +3,11 @@ SQLAlchemy ORM models for the Residential Security System.
 Maps database tables to Python classes.
 """
 import uuid
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
-from sqlalchemy.dialects.postgresql import UUID
-
 from src.database.session import Base
+
 
 # --- CAMERA MODEL ---
 class Camera(Base):
@@ -19,11 +19,10 @@ class Camera(Base):
     ip_address = Column(String(250), unique=True, nullable=False)
     status = Column(String(100), nullable=False)
 
+
 # --- PERSON MODEL ---
 class Person(Base):
-    """
-    Database model representing an enrolled person in the security system.
-    """
+    """ORM model for the 'persons' table."""
     __tablename__ = "persons"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -36,5 +35,27 @@ class Person(Base):
     valid_from = Column(DateTime, nullable=True)
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
-    
-    face_embedding = Column(String, nullable=True) # We leave it as a string for FastAPI response, but it will store the embedding vector.
+    face_embedding = Column(String, nullable=True)
+
+
+# --- INCIDENT MODEL ---
+class Incident(Base):
+    """ORM model for the 'incidents' table."""
+    __tablename__ = "incidents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at = Column(DateTime, server_default=func.now())
+    incident_metadata = Column(JSONB, nullable=False)
+
+
+# --- ALERT MODEL ---
+class Alert(Base):
+    """ORM model for the 'alerts' table (notification inbox for frontend)."""
+    __tablename__ = "alerts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=True)
+    message = Column(Text, nullable=False)
+    status = Column(String(50), nullable=False, server_default="UNREAD")
+    created_at = Column(DateTime, server_default=func.now())
+    resolved_at = Column(DateTime, nullable=True)
