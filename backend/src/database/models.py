@@ -26,8 +26,6 @@ class Person(Base):
     """
     __tablename__ = "persons"
 
-    __tablename__ = "persons"
-
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     full_name = Column(String(100), nullable=False)
     person_type = Column(String(50), nullable=False)
@@ -38,4 +36,5 @@ class Person(Base):
     valid_from = Column(DateTime, nullable=True)
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    
     face_embedding = Column(String, nullable=True) # We leave it as a string for FastAPI response, but it will store the embedding vector.
