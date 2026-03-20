@@ -1,14 +1,23 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from src.api.routes.cameras import router as cameras_router
+from src.api.routes.persons import router as persons_router
+
+
 # Initialize the application with enterprise-grade metadata
 app = FastAPI(
     title="Residential Security System API",
     description="Core backend for video ingestion, AI evaluation, and incident management.",
     version="1.0.0",
     docs_url="/api/docs",   # Custom route for Swagger UI documentation
-    redoc_url="/api/redoc"  # Alternative route for ReDoc documentation
+    redoc_url="/api/redoc",  # Alternative route for ReDoc documentation
 )
+
+# --- Register Routers ---
+app.include_router(cameras_router, prefix="/api")
+app.include_router(persons_router, prefix="/api")
+
 
 @app.get("/health", tags=["System"])
 async def health_check():

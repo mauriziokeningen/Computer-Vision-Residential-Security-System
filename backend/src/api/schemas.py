@@ -1,23 +1,50 @@
-from pydantic import BaseModel, Field
+"""
+Pydantic schemas for the Residential Security System.
+Separates input validation (Create/Update) from output serialization (Response).
+"""
+from uuid import UUID
 from datetime import datetime
 from typing import Optional
+from pydantic import BaseModel, Field
 
-# 1. Base Schema: Properties shared across all Person schemas
+# ==========================================
+# CAMERA SCHEMAS 
+# ==========================================
+class CameraCreate(BaseModel):
+    """Schema for creating a new camera. All fields required."""
+    location: str = Field(..., min_length=1, max_length=250, examples=["Lobby principal - Edificio A"])
+    ip_address: str = Field(..., min_length=7, max_length=250, examples=["192.168.1.100"])
+    status: str = Field(..., min_length=1, max_length=100, examples=["ACTIVE"])
+
+class CameraUpdate(BaseModel):
+    """Schema for partial camera updates. All fields optional."""
+    location: Optional[str] = Field(None, min_length=1, max_length=250)
+    ip_address: Optional[str] = Field(None, min_length=7, max_length=250)
+    status: Optional[str] = Field(None, min_length=1, max_length=100)
+
+class CameraResponse(BaseModel):
+    """Schema for API responses. Maps directly to the 'cameras' table."""
+    id: UUID
+    location: str
+    ip_address: str
+    status: str
+
+    model_config = {"from_attributes": True}
+
+# ==========================================
+# PERSON SCHEMAS
+# ==========================================
 class PersonBase(BaseModel):
     name: str = Field(..., example="Mauricio", description="Full name of the enrolled person")
 
-# 2. Create Schema: Properties required from the client to create a Person
 class PersonCreate(PersonBase):
-    # Currently we only need the name. 
-    # Later, we will add the face vector array here when integrating ArcFace.
+    """Required fields to enroll a person."""
     pass
 
-# 3. Response Schema: Properties returned to the client (Frontend)
 class PersonResponse(PersonBase):
+    """Response schema for enrolled persons."""
     id: int
     face_encoding: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        # Crucial for FastAPI: Tells Pydantic to read data from SQLAlchemy ORM objects
-        from_attributes = True
+    model_config = {"from_attributes": True}
