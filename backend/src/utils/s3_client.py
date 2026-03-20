@@ -96,7 +96,8 @@ def upload_incident_clip(
     """Upload a file grouped by incident and camera."""
     date_prefix = datetime.utcnow().strftime("%Y/%m/%d")
     object_name = (
-        f"{date_prefix}/incident_{incident_id}/"
+        f"incident_{incident_id}/"
+        f"{date_prefix}/"
         f"camera_{camera_id}/{filename}"
     )
     return upload_file(

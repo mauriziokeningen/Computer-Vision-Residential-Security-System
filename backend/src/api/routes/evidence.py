@@ -3,7 +3,7 @@ REST endpoints for evidence file management.
 Handles uploading incident evidence (video clips, images) to MinIO
 and generating temporary URLs for viewing.
 """
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
@@ -27,7 +27,7 @@ class FileInfo(BaseModel):
     object_name: str
     size: int
     last_modified: str = None
-    content_type: str = None
+    content_type: Optional[str] = None
 
 
 class PresignedUrlResponse(BaseModel):
