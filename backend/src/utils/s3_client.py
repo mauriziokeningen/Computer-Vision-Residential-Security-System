@@ -86,7 +86,6 @@ def upload_file(
         logger.error(f"Failed to upload '{object_name}': {e}")
         raise
 
-
 def upload_incident_clip(
     file_data: bytes,
     incident_id: str,

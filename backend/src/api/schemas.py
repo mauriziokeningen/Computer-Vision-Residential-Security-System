@@ -54,7 +54,6 @@ class PersonResponse(PersonBase):
     model_config = {"from_attributes": True}
 
 
-
 # ALERT SCHEMAS
 
 class AlertCreate(BaseModel):
