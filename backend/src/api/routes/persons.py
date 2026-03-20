@@ -35,3 +35,14 @@ def enroll_person(person: PersonCreate, db: Session = Depends(get_db)):
     
     # 3. Retornamos el objeto (FastAPI y Pydantic lo convertirán a JSON automáticamente)
     return db_person
+
+
+@router.get("/", response_model=list[PersonResponse])
+def get_persons(db: Session = Depends(get_db)):
+    """
+    Endpoint to retrieve all enrolled persons. 
+    """
+
+    persons = db.query(Person).all()
+
+    return persons
