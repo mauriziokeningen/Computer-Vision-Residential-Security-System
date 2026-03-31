@@ -8,14 +8,22 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-
-# CAMERA SCHEMAS
+# --- CAMERA SCHEMAS ---
 
 class CameraCreate(BaseModel):
     """Schema for creating a new camera. All fields required."""
-    location: str = Field(..., min_length=1, max_length=250, examples=["Lobby principal - Edificio A"])
-    ip_address: str = Field(..., min_length=7, max_length=250, examples=["192.168.1.100"])
-    status: str = Field(..., min_length=1, max_length=100, examples=["ACTIVE"])
+    location: str = Field(
+        ..., min_length=1, max_length=250, 
+        json_schema_extra={"examples": ["Lobby principal - Edificio A"]}
+    )
+    ip_address: str = Field(
+        ..., min_length=7, max_length=250, 
+        json_schema_extra={"examples": ["192.168.1.100"]}
+    )
+    status: str = Field(
+        ..., min_length=1, max_length=100, 
+        json_schema_extra={"examples": ["ACTIVE"]}
+    )
 
 
 class CameraUpdate(BaseModel):
@@ -35,12 +43,19 @@ class CameraResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-
-# PERSON SCHEMAS
+# --- PERSON SCHEMAS ---
 
 class PersonBase(BaseModel):
-    full_name: str = Field(..., example="Mauricio", description="Full name")
-    person_type: str = Field(..., example="RESIDENT", description="Tipo (RESIDENT, VISITOR, STAFF)")
+    full_name: str = Field(
+        ..., 
+        description="Full name",
+        json_schema_extra={"example": "Mauricio"}
+    )
+    person_type: str = Field(
+        ..., 
+        description="Tipo (RESIDENT, VISITOR, STAFF)",
+        json_schema_extra={"example": "RESIDENT"}
+    )
 
 
 class PersonCreate(PersonBase):
@@ -54,12 +69,23 @@ class PersonResponse(PersonBase):
     model_config = {"from_attributes": True}
 
 
-# ALERT SCHEMAS
+class EnrollmentResponse(BaseModel):
+    """Schema for the response after a successful biometric extraction."""
+    person_id: UUID
+    status: str
+    faces_processed: int
+    message: str
+
+
+# --- ALERT SCHEMAS ---
 
 class AlertCreate(BaseModel):
     """Schema for creating a new alert."""
     incident_id: Optional[UUID] = Field(None, description="UUID of the related incident")
-    message: str = Field(..., min_length=1, examples=["Arma detectada en Lobby principal"])
+    message: str = Field(
+        ..., min_length=1, 
+        json_schema_extra={"examples": ["Arma detectada en Lobby principal"]}
+    )
 
 
 class AlertStatusUpdate(BaseModel):

@@ -19,7 +19,7 @@ CREATE TABLE persons (
     valid_from TIMESTAMP,                   -- Para accesos temporales (Visitantes)
     valid_until TIMESTAMP,                  -- Para accesos temporales (Visitantes)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    face_embedding VECTOR(512) NOT NULL
+    face_embedding VECTOR(512)
 );
 
 -- Catálogo de Infraestructura (Cámaras físicas)

@@ -1,39 +1,44 @@
-# --- Inter-Process Communication & Core ---
-pyzmq==25.1.2
-numpy==1.26.4
-pillow==12.0.0
-
-# --- Deep Learning Frameworks (GPU support) ---
-# Nota: TensorFlow 2.15 es la versión más estable con CUDA 12.x
-tensorflow==2.16.2
-tf-keras==2.16.0
-keras>=3.0.0
-
-# --- Computer Vision AI Models ---
-deepface==0.0.95
-ultralytics==8.1.24
-mtcnn==1.0.0
-retina-face==0.0.17
-
-# --- AI Pipeline (Biometric Enrollment) ---
-insightface==0.7.3
-onnxruntime>=1.16.0
-opencv-python-headless==4.9.0.80
-
-# --- Modern Backend API (FastAPI TT2) ---
-fastapi==0.110.0
+# --- Core Web API & Framework ---
+fastapi==0.135.2
 uvicorn[standard]==0.29.0
-pydantic==2.6.3
+pydantic==2.12.5
 pydantic-settings==2.2.1
 python-multipart==0.0.22
+starlette==1.0.0
 
-# --- Database and Utilities ---
-psycopg2-binary==2.9.11
+# --- Database & Vectors ---
 SQLAlchemy==2.0.28
+psycopg2-binary==2.9.11
 pgvector==0.2.5
 python-dotenv==1.0.1
+
+# --- AI & Deep Learning Frameworks ---
+# Usando versiones detectadas en tu pip list
+tensorflow==2.16.2
+tf-keras==2.16.0
+torch==2.10.0
+torchvision==0.25.0
+numpy==1.26.4
+onnx==1.19.0
+onnxruntime==1.24.4
+
+# --- Computer Vision & Biometrics ---
+insightface==0.7.3
+opencv-python==4.9.0.80
+opencv-python-headless==4.9.0.80
+deepface==0.0.95
+retina-face==0.0.17
+ultralytics==8.1.24
+mtcnn==1.0.0
+pillow==12.0.0
+
+# --- Storage & Utilities ---
+minio==7.2.20
 pandas==2.3.3
 tqdm==4.67.1
 rich==14.2.0
 requests==2.32.5
-minio==7.2.20
+
+# --- Testing (CRITICAL for CI/CD) ---
+pytest==9.0.2
+httpx==0.28.1
