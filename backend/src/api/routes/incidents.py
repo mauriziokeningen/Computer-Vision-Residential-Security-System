@@ -5,7 +5,7 @@ for testing the rule engine without running the AI modules.
 """
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
@@ -105,7 +105,7 @@ async def simulate_event(event: EventSimulation, db: Session = Depends(get_db)):
     Fall detected:
     {"module": "pose", "camera_id": "cam-lobby", "detections": [{"action": "fall", "confidence": 0.90}]}
     """
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     camera_id = event.camera_id
 
     # Build the event in the same format ZeroMQ uses
