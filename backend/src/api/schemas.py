@@ -4,7 +4,7 @@ Separates input validation (Create/Update) from output serialization (Response).
 """
 from uuid import UUID
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -13,16 +13,22 @@ from pydantic import BaseModel, Field
 class CameraCreate(BaseModel):
     """Schema for creating a new camera. All fields required."""
     location: str = Field(
-        ..., min_length=1, max_length=250, 
-        json_schema_extra={"examples": ["Lobby principal - Edificio A"]}
+        ..., 
+        min_length=1, 
+        max_length=250, 
+        json_schema_extra={"example": "Lobby principal - Edificio A"}
     )
     ip_address: str = Field(
-        ..., min_length=7, max_length=250, 
-        json_schema_extra={"examples": ["192.168.1.100"]}
+        ..., 
+        min_length=7, 
+        max_length=250, 
+        json_schema_extra={"example": "192.168.1.100"}
     )
     status: str = Field(
-        ..., min_length=1, max_length=100, 
-        json_schema_extra={"examples": ["ACTIVE"]}
+        ..., 
+        min_length=1, 
+        max_length=100, 
+        json_schema_extra={"example": "ACTIVE"}
     )
 
 
@@ -48,13 +54,13 @@ class CameraResponse(BaseModel):
 class PersonBase(BaseModel):
     full_name: str = Field(
         ..., 
-        description="Full name",
-        json_schema_extra={"example": "Mauricio"}
+        json_schema_extra={"example": "Mauricio"}, 
+        description="Full name"
     )
     person_type: str = Field(
         ..., 
-        description="Tipo (RESIDENT, VISITOR, STAFF)",
-        json_schema_extra={"example": "RESIDENT"}
+        json_schema_extra={"example": "RESIDENT"}, 
+        description="Tipo (RESIDENT, VISITOR, STAFF)"
     )
 
 
@@ -83,8 +89,9 @@ class AlertCreate(BaseModel):
     """Schema for creating a new alert."""
     incident_id: Optional[UUID] = Field(None, description="UUID of the related incident")
     message: str = Field(
-        ..., min_length=1, 
-        json_schema_extra={"examples": ["Arma detectada en Lobby principal"]}
+        ..., 
+        min_length=1, 
+        json_schema_extra={"example": "Arma detectada en Lobby principal"}
     )
 
 
