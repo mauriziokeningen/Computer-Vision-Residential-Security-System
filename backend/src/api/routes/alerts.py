@@ -5,10 +5,11 @@ Alerts are created by the system (incident engine) and managed by security perso
 """
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from src.api.schemas import AlertCreate, AlertStatusUpdate, AlertResponse
 from src.database.session import get_db
@@ -34,9 +35,17 @@ async def create_alert(alert: AlertCreate, db: Session = Depends(get_db)):
         message=alert.message,
     )
     db.add(new_alert)
-    db.commit()
-    db.refresh(new_alert)
-    return new_alert
+    
+    try:
+        db.commit()
+        db.refresh(new_alert)
+        return new_alert
+    except IntegrityError:
+        db.rollback()  # Limpia la sesión para que no se corrompa
+        raise HTTPException(
+            status_code=400,
+            detail=f"El incidente proporcionado ({alert.incident_id}) no existe en el sistema."
+        )
 
 
 # ==============================================================================
@@ -139,7 +148,7 @@ async def update_alert_status(
 
     # Auto-set resolved_at when status changes to RESOLVED
     if update.status == "RESOLVED":
-        alert.resolved_at = datetime.utcnow()
+        alert.resolved_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(alert)
