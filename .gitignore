@@ -37,21 +37,19 @@ env/
 # =======================================================
 # 3. LARGE DATASETS & TRAINING OUTPUT (CRITICAL)
 # =======================================================
+**/models_testing/Body Language/NTU_dataset/
+**/models_testing/Body Language/*.zip
+**/models_testing/Facial Recognition/data/
+**/models_testing/Facial Recognition/face_rec_env/
+**/models_testing/Facial Recognition/lfw-deepfunneled/
 
-# TT1 Datasets (These are huge and should use DVC, not Git)
-# These files should NOT be in the Git repository.
-backend/mis_fotos
-backend/tests/Facial Recognition/data
-backend/tests/Facial Recognition/lfw-deepfunneled
-backend/tests/Body Language/NTU_dataset/
+# TT1 Datasets y archivos viejos (se mantienen por seguridad)
+backend/mis_fotos/
 gun-and-knife-dataset/
-backend/tests/Body Language/nturgbd_skeletons_s001_to_s017.zip
+backend/referencia_mauricio.npy
 
 # AI Models and Weights
 Modules/*/model/
-backend/tests/Facial Recognition/face_rec_env/
-backend/referencia_mauricio.npy
-
 
 # =======================================================
 # 4. OS/IDE Files
