@@ -8,7 +8,7 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
-# CAMERA SCHEMAS
+# --- CAMERA SCHEMAS ---
 
 class CameraCreate(BaseModel):
     """Schema for creating a new camera. All fields required."""
@@ -49,7 +49,7 @@ class CameraResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# PERSON SCHEMAS
+# --- PERSON SCHEMAS ---
 
 class PersonBase(BaseModel):
     full_name: str = Field(
@@ -75,7 +75,15 @@ class PersonResponse(PersonBase):
     model_config = {"from_attributes": True}
 
 
-# ALERT SCHEMAS
+class EnrollmentResponse(BaseModel):
+    """Schema for the response after a successful biometric extraction."""
+    person_id: UUID
+    status: str
+    faces_processed: int
+    message: str
+
+
+# --- ALERT SCHEMAS ---
 
 class AlertCreate(BaseModel):
     """Schema for creating a new alert."""
