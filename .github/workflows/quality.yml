@@ -31,10 +31,11 @@ jobs:
         cache: 'pip'
 
     # 2. FIX FOR OPENCV: Install system libraries for graphics
+    # Updated for Ubuntu 24.04 (Noble) compatibility
     - name: Install System Dependencies (OpenCV fix)
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
+        sudo apt-get install -y libgl1 libglib2.0-0
 
     - name: Install Backend Dependencies
       run: |
