@@ -13,16 +13,15 @@ pgvector==0.2.5
 python-dotenv==1.0.1
 
 # --- AI & Deep Learning Frameworks ---
-# Bumped TF to 2.17.0 to unlock ml_dtypes 0.4.x compatibility
-tensorflow==2.17.0
-tf-keras==2.17.0
+tensorflow==2.16.2
+tf-keras==2.16.0
 torch==2.10.0
 torchvision==0.25.0
 numpy==1.26.4
-onnx==1.19.0
-onnxruntime==1.24.4
-# CRITICAL FIX: 0.4.1 satisfies both TensorFlow 2.17 and ONNX 1.19
-ml_dtypes==0.4.1
+# THE MASTERSTROKE: Downgrade ONNX to 1.18.1 to bypass the ml_dtypes float4 crash
+onnx==1.18.1
+onnxruntime==1.18.1
+ml_dtypes==0.3.2
 
 # --- Computer Vision & Biometrics ---
 insightface==0.7.3
