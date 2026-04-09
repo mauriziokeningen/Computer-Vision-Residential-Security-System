@@ -1,4 +1,4 @@
-name: Guardian de Calidad TT2
+name: Quality Guardian TT2
 
 on:
   push:
@@ -10,22 +10,45 @@ jobs:
   backend-check:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
+    - uses: actions/checkout@v4 # Updated to v4
+
+    # 1. DISK CLEANUP (Crucial to avoid 'No space left on device' errors)
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@v1.3.1
+      with:
+        # We remove unused tools to gain ~20GB-30GB of space
+        tool-cache: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
     - name: Set up Python 3.11
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5 # Updated to v5
       with:
         python-version: "3.11"
-        
-    - name: Instalar dependencias Backend
+        cache: 'pip' # Enables automatic dependency caching
+
+    - name: Install Backend Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install flake8 pytest
-        # Buscamos el archivo DENTRO de la carpeta backend
+        # PRO TIP: Install the CPU-only version of Torch to avoid 5GB of bloat. 
+        # The runner doesn't have a GPU, so this saves time and space.
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
-        
-    - name: Analisis de Sintaxis (Linting)
+
+    - name: Syntax Analysis (Linting)
       run: |
-        # Analizamos SOLO la carpeta backend
+        # Analyze ONLY the backend folder
         flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 backend/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    # 2. TEST EXECUTION (Automated validation)
+    - name: Run Tests with Pytest
+      run: |
+        # Set PYTHONPATH so pytest can correctly locate the 'src' directory
+        export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+        pytest backend/tests/test_websockets.py
