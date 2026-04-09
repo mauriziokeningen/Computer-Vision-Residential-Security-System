@@ -10,13 +10,12 @@ jobs:
   backend-check:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4 # Updated to v4
+    - uses: actions/checkout@v4
 
-    # 1. DISK CLEANUP (Crucial to avoid 'No space left on device' errors)
+    # 1. DISK CLEANUP (To gain ~20GB-30GB of space)
     - name: Free Disk Space
       uses: jlumbroso/free-disk-space@v1.3.1
       with:
-        # We remove unused tools to gain ~20GB-30GB of space
         tool-cache: true
         android: true
         dotnet: true
@@ -26,29 +25,32 @@ jobs:
         swap-storage: true
 
     - name: Set up Python 3.11
-      uses: actions/setup-python@v5 # Updated to v5
+      uses: actions/setup-python@v5
       with:
         python-version: "3.11"
-        cache: 'pip' # Enables automatic dependency caching
+        cache: 'pip'
+
+    # 2. FIX FOR OPENCV: Install system libraries for graphics
+    - name: Install System Dependencies (OpenCV fix)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
 
     - name: Install Backend Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install flake8 pytest
-        # PRO TIP: Install the CPU-only version of Torch to avoid 5GB of bloat. 
-        # The runner doesn't have a GPU, so this saves time and space.
+        # PRO TIP: Install CPU-only Torch to save space/time
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
 
     - name: Syntax Analysis (Linting)
       run: |
-        # Analyze ONLY the backend folder
         flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 backend/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    # 2. TEST EXECUTION (Automated validation)
+    # 3. TEST EXECUTION
     - name: Run Tests with Pytest
       run: |
-        # Set PYTHONPATH so pytest can correctly locate the 'src' directory
         export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
         pytest backend/tests/test_websockets.py
