@@ -3,9 +3,19 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+# --- NEW IMPORTS FOR SQLITE PATCH ---
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.dialects.postgresql import JSONB
+
 from src.api.server import app
 from src.database.session import get_db
 from src.database.models import Base
+
+# --- SQLITE COMPATIBILITY PATCH ---
+# Tells SQLAlchemy: "When using SQLite for tests, convert Postgres JSONB to standard JSON"
+@compiles(JSONB, 'sqlite')
+def compile_jsonb_sqlite(type_, compiler, **kw):
+    return 'JSON'
 
 # 1. Setup an isolated Test Database (e.g., SQLite in-memory)
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
