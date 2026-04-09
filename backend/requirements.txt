@@ -13,18 +13,19 @@ pgvector==0.2.5
 python-dotenv==1.0.1
 
 # --- AI & Deep Learning Frameworks ---
-# Usando versiones detectadas en tu pip list
 tensorflow==2.16.2
 tf-keras==2.16.0
 torch==2.10.0
 torchvision==0.25.0
 numpy==1.26.4
-onnx==1.19.0
-onnxruntime==1.24.4
+# THE MASTERSTROKE: Downgrade ONNX to 1.18.0 to bypass the ml_dtypes float4 crash
+onnx==1.18.0
+onnxruntime==1.18.0
+ml_dtypes==0.3.2
 
 # --- Computer Vision & Biometrics ---
 insightface==0.7.3
-opencv-python==4.9.0.80
+# CRITICAL FIX: Only use the headless version on servers to prevent GUI library conflicts
 opencv-python-headless==4.9.0.80
 deepface==0.0.95
 retina-face==0.0.17

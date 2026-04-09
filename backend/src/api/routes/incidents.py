@@ -2,6 +2,7 @@
 REST endpoints for Incident management and event simulation.
 Provides query endpoints for the frontend and a simulation endpoint
 for testing the rule engine without running the AI modules.
+Integrates WebSocket notifications for real-time push to frontend.
 """
 from typing import List, Optional
 from uuid import UUID
@@ -13,6 +14,10 @@ from pydantic import BaseModel, Field
 
 from src.database.session import get_db
 from src.database.models import Incident, Alert
+from src.api.notifications import (
+    notify_new_alert,
+    notify_alert_count_update,
+)
 
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
 
@@ -88,33 +93,10 @@ async def get_incident(incident_id: UUID, db: Session = Depends(get_db)):
 async def simulate_event(event: EventSimulation, db: Session = Depends(get_db)):
     """
     Simulate an AI module event to test the rule engine.
-    This endpoint processes the event through the same business rules
-    as the ZeroMQ listener, but via REST for easy testing.
-
-    Example events:
-
-    Unknown person:
-    {"module": "face", "camera_id": "cam-lobby", "detections": [{"name": "unknown_person", "confidence": 0.85}]}
-
-    Weapon detected:
-    {"module": "weapons", "camera_id": "cam-lobby", "detections": [{"class": "gun", "confidence": 0.92}]}
-
-    Fight detected:
-    {"module": "pose", "camera_id": "cam-lobby", "detections": [{"action": "punch", "confidence": 0.88}]}
-
-    Fall detected:
-    {"module": "pose", "camera_id": "cam-lobby", "detections": [{"action": "fall", "confidence": 0.90}]}
+    Creates incident + alert and pushes WebSocket notification.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
     camera_id = event.camera_id
-
-    # Build the event in the same format ZeroMQ uses
-    zmq_event = {
-        "timestamp": timestamp,
-        "camera_id": camera_id,
-        "module": event.module,
-        "detections": event.detections,
-    }
 
     incident_id = None
     alert_message = None
@@ -198,6 +180,22 @@ async def simulate_event(event: EventSimulation, db: Session = Depends(get_db)):
         )
         db.add(alert)
         db.commit()
+        db.refresh(alert)
+
+        # Push WebSocket notifications
+        await notify_new_alert(
+            alert_id=alert.id,
+            incident_id=incident.id,
+            message=alert_message,
+            status=alert.status,
+            created_at=alert.created_at,
+        )
+
+        # Broadcast updated counts
+        unread = db.query(Alert).filter(Alert.status == "UNREAD").count()
+        acknowledged = db.query(Alert).filter(Alert.status == "ACKNOWLEDGED").count()
+        resolved = db.query(Alert).filter(Alert.status == "RESOLVED").count()
+        await notify_alert_count_update(unread, acknowledged, resolved)
 
     return SimulationResponse(
         incident_id=incident_id,
