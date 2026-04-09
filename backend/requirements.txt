@@ -18,9 +18,9 @@ tf-keras==2.16.0
 torch==2.10.0
 torchvision==0.25.0
 numpy==1.26.4
-# THE MASTERSTROKE: Downgrade ONNX to 1.18.1 to bypass the ml_dtypes float4 crash
-onnx==1.18.1
-onnxruntime==1.18.1
+# THE MASTERSTROKE: Downgrade ONNX to 1.18.0 to bypass the ml_dtypes float4 crash
+onnx==1.18.0
+onnxruntime==1.18.0
 ml_dtypes==0.3.2
 
 # --- Computer Vision & Biometrics ---
