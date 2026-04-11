@@ -1,7 +1,8 @@
 """
-Incident Rule Engine for the Residential Security System.
-Receives JSON events from AI modules via ZeroMQ, evaluates business rules, 
-and creates incidents, alerts, and evidence records in the database.
+Incident Rule Engine & Orchestrator.
+Acts as the central Sink Node in the IPC architecture. Consumes stateless events 
+from AI workers via ZeroMQ (PULL), applies temporal state (debouncing), 
+and executes side-effects (DB writes, S3 uploads, WebSocket alerts).
 """
 import zmq
 import time
@@ -12,30 +13,33 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RuleEngine")
 
+# --- Boundary Contract ---
+# ASSUMPTION: Upstream AI workers MUST connect via zmq.PUSH. 
+# This orchestrator uses zmq.PULL to act as a load-balanced sink.
 RECEIVER_PORT = "tcp://127.0.0.1:5556"
 
-# --- Priority Levels ---
 PRIORITY_LOW = "LOW"
 PRIORITY_MEDIUM = "MEDIUM"
 PRIORITY_HIGH = "HIGH"
 PRIORITY_CRITICAL = "CRITICAL"
 
-# --- Cooldown / Debounce Configuration ---
-# Prevents alert spam by ignoring duplicate events within these time windows (in seconds)
+# --- Architectural Trade-off: Local Memory vs External Cache ---
+# We use a native Python dict for O(1) state tracking instead of Redis. 
+# TRADE-OFF: State is lost on container restart. This is acceptable for physical security 
+# (a reboot should immediately trigger fresh alerts). It saves ~2-5ms of network I/O per frame, 
+# preventing the ZeroMQ PULL socket from backing up.
 COOLDOWN_PERIODS = {
-    "RN-02": 15.0,            # Unknown person
-    "WEAPON_DETECTED": 10.0,  # Weapons (shorter cooldown, higher priority)
-    "RN-04": 15.0,            # Aggression
-    "RN-05": 30.0,            # Fall detection
-    "RN-06": 10.0,            # Critical: Unknown + Threat
-    "RN-07": 30.0             # Assistential: Resident + Fall
+    "RN-02": 15.0,            
+    "WEAPON_DETECTED": 10.0,  
+    "RN-04": 15.0,            
+    "RN-05": 30.0,            
+    "RN-06": 10.0,            
+    "RN-07": 30.0             
 }
 
-# In-memory cache to store the last trigger time: {"camera_id_rule": timestamp}
 last_incident_times = {}
 
 def _check_cooldown(camera_id: str, rule_id: str) -> bool:
-    """Returns True if enough time has passed to trigger the rule again."""
     current_time = time.time()
     cache_key = f"{camera_id}_{rule_id}"
     last_time = last_incident_times.get(cache_key, 0)
@@ -46,15 +50,13 @@ def _check_cooldown(camera_id: str, rule_id: str) -> bool:
     return False
 
 def _get_db_session():
-    """Creates a database session for the orchestrator process."""
+    # TECH DEBT: Instantiating a new session per event is expensive.
+    # For V2 scaling (>5 cameras), we must implement a SQLAlchemy Connection Pool 
+    # or pass a persistent session generator to avoid exhausting DB connections.
     from src.database.session import SessionLocal
     return SessionLocal()
 
 def _create_incident(db, event: Dict[str, Any], rule_triggered: str, priority: str) -> Any:
-    """
-    Creates an incident record in the database.
-    Returns the created incident.
-    """
     from src.database.models import Incident
     metadata = {
         "rule_triggered": rule_triggered,
@@ -68,27 +70,25 @@ def _create_incident(db, event: Dict[str, Any], rule_triggered: str, priority: s
     db.add(incident)
     db.commit()
     db.refresh(incident)
-    logger.info(f"Incident created: {incident.id} (Rule: {rule_triggered}, Priority: {priority})")
+    logger.debug(f"Incident created: {incident.id} (Rule: {rule_triggered}, Priority: {priority})")
     return incident
 
 def _create_alert(db, incident_id, message: str) -> Any:
-    """Creates an alert linked to an incident."""
     from src.database.models import Alert
     alert = Alert(incident_id=incident_id, message=message)
     db.add(alert)
     db.commit()
     db.refresh(alert)
-    logger.info(f"Alert created: {alert.id} -> {message}")
+    logger.debug(f"Alert created: {alert.id} -> {message}")
     return alert
 
 def _save_evidence(incident_id: str, camera_id: str, frame_data: Optional[bytes] = None) -> Optional[str]:
-    """
-    Saves evidence to MinIO if frame data is available.
-    Returns the object path or None.
-    """
     if not frame_data:
         return None
     try:
+        # TECH DEBT: Synchronous network I/O. 
+        # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades, 
+        # the IPC bus will back up. V2 must offload this to a Celery background worker.
         from src.utils.s3_client import upload_incident_clip
         object_name = upload_incident_clip(
             file_data=frame_data,
@@ -97,13 +97,11 @@ def _save_evidence(incident_id: str, camera_id: str, frame_data: Optional[bytes]
             filename=f"frame_{datetime.utcnow().strftime('%H%M%S')}.jpg",
             content_type="image/jpeg",
         )
-        logger.info(f"Evidence saved: {object_name}")
+        logger.debug(f"Evidence saved: {object_name}")
         return object_name
     except Exception as e:
         logger.error(f"Failed to save evidence: {e}")
         return None
-
-# RULE EVALUATORS
 
 def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     detections = event.get("detections", [])
@@ -121,19 +119,13 @@ def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if name == "unknown_person":
             face_summary["unknown_detected"] = True
 
-            # DEBOUNCER CHECK
             if _check_cooldown(camera_id, "RN-02"):
                 incident = _create_incident(db, event, "RN-02", PRIORITY_MEDIUM)
-                _create_alert(
-                    db, incident.id,
-                    f"Persona desconocida detectada en {camera_id} "
-                    f"({timestamp}) - Confianza: {conf_pct:.1f}%"
-                )
+                _create_alert(db, incident.id, f"Persona desconocida detectada en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
                 _save_evidence(incident.id, camera_id, frame_data)
                 logger.warning(f"[SECURITY ALERT] Unknown person at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
         else:
             face_summary["known_names"].append(name)
-            # We don't debounce access granted logs, they are just info, not DB writes
             logger.info(f"[ACCESS GRANTED] Resident: {name} at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
 
     return face_summary
@@ -154,7 +146,6 @@ def _evaluate_weapon_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]
         weapon_summary["weapon_detected"] = True
         weapon_summary["weapons"].append(weapon_class)
 
-        # DEBOUNCER CHECK
         if _check_cooldown(camera_id, "WEAPON_DETECTED"):
             incident = _create_incident(db, event, "WEAPON_DETECTED", PRIORITY_HIGH)
             _create_alert(db, incident.id, f"ARMA DETECTADA: {weapon_class} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
@@ -231,6 +222,12 @@ def _evaluate_compound_event(db, event: Dict[str, Any], face_summary: Optional[D
             logger.warning(f"[ASSISTENTIAL] Resident fall detected at {timestamp} on {camera_id}")
 
 class EventAccumulator:
+    """
+    Temporal Synchronization Buffer.
+    Different AI models (Face, Pose) process frames at different latencies. 
+    This buffer captures events within a small temporal window to accurately 
+    evaluate cross-module compound rules (e.g., Threat + Unknown Face).
+    """
     def __init__(self, window_seconds: float = 2.0):
         self.window = window_seconds
         self.events: Dict[str, Dict] = {}
@@ -283,6 +280,9 @@ def start_orchestrator() -> None:
                     accumulator.reset()
 
             finally:
+                # CHESTERTON'S FENCE: Always close the DB session in the finally block.
+                # Failing to release this connection back to the OS will cause a PostgreSQL
+                # connection pool exhaustion (FATAL: sorry, too many clients already) in minutes.
                 db.close()
 
         except Exception as e:
