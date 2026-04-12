@@ -82,14 +82,20 @@ def _create_alert(db, incident_id, message: str) -> Any:
     logger.debug(f"Alert created: {alert.id} -> {message}")
     return alert
 
-def _save_evidence(incident_id: str, camera_id: str, frame_data: Optional[bytes] = None) -> Optional[str]:
+def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optional[str]:
     if not frame_data:
         return None
     try:
-        # TECH DEBT: Synchronous network I/O. 
-        # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades, 
-        # the IPC bus will back up. V2 must offload this to a Celery background worker.
         from src.utils.s3_client import upload_incident_clip
+
+        # If frame_data is base64 string, decode it to bytes
+        if isinstance(frame_data, str):
+            import base64
+            frame_data = base64.b64decode(frame_data)
+
+        # TECH DEBT: Synchronous network I/O.
+        # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades,
+        # the IPC bus will back up. V2 must offload this to a Celery background worker.
         object_name = upload_incident_clip(
             file_data=frame_data,
             incident_id=str(incident_id),
