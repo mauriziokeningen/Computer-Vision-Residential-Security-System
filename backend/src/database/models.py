@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
+from pgvector.sqlalchemy import Vector
 from src.database.session import Base
 
 
@@ -35,7 +36,7 @@ class Person(Base):
     valid_from = Column(DateTime, nullable=True)
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
-    face_embedding = Column(String, nullable=True)
+    face_embedding = Column(Vector(512), nullable=True)
 
 
 # --- INCIDENT MODEL ---

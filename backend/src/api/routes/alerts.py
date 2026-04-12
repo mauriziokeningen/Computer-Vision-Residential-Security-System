@@ -2,22 +2,37 @@
 REST endpoints for Alert state management.
 Handles viewing, filtering, and updating alert statuses.
 Alerts are created by the system (incident engine) and managed by security personnel.
+Integrates WebSocket notifications for real-time push to frontend.
 """
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from src.api.schemas import AlertCreate, AlertStatusUpdate, AlertResponse
 from src.database.session import get_db
 from src.database.models import Alert
+from src.api.notifications import (
+    notify_new_alert,
+    notify_alert_status_change,
+    notify_alert_count_update,
+)
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
 # Valid status transitions
 VALID_STATUSES = {"UNREAD", "ACKNOWLEDGED", "RESOLVED"}
+
+
+async def _broadcast_count_update(db: Session) -> None:
+    """Helper to broadcast current alert counts after any change."""
+    unread = db.query(Alert).filter(Alert.status == "UNREAD").count()
+    acknowledged = db.query(Alert).filter(Alert.status == "ACKNOWLEDGED").count()
+    resolved = db.query(Alert).filter(Alert.status == "RESOLVED").count()
+    await notify_alert_count_update(unread, acknowledged, resolved)
 
 
 # ==============================================================================
@@ -28,15 +43,35 @@ async def create_alert(alert: AlertCreate, db: Session = Depends(get_db)):
     """
     Create a new alert in the system.
     Typically called by the incident rule engine, not manually.
+    Broadcasts a WebSocket notification to all connected clients.
     """
     new_alert = Alert(
         incident_id=alert.incident_id,
         message=alert.message,
     )
     db.add(new_alert)
-    db.commit()
-    db.refresh(new_alert)
-    return new_alert
+
+    try:
+        db.commit()
+        db.refresh(new_alert)
+
+        # Push real-time notification
+        await notify_new_alert(
+            alert_id=new_alert.id,
+            incident_id=new_alert.incident_id,
+            message=new_alert.message,
+            status=new_alert.status,
+            created_at=new_alert.created_at,
+        )
+        await _broadcast_count_update(db)
+
+        return new_alert
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"El incidente proporcionado ({alert.incident_id}) no existe en el sistema."
+        )
 
 
 # ==============================================================================
@@ -111,6 +146,7 @@ async def update_alert_status(
     Update the status of an alert.
     Valid transitions: UNREAD -> ACKNOWLEDGED -> RESOLVED.
     When resolved, the resolved_at timestamp is set automatically.
+    Broadcasts a WebSocket notification on status change.
     """
     if update.status not in VALID_STATUSES:
         raise HTTPException(
@@ -135,12 +171,23 @@ async def update_alert_status(
             detail="Cannot revert an acknowledged alert back to unread."
         )
 
+    old_status = alert.status
     alert.status = update.status
 
     # Auto-set resolved_at when status changes to RESOLVED
     if update.status == "RESOLVED":
-        alert.resolved_at = datetime.utcnow()
+        alert.resolved_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(alert)
+
+    # Push real-time notification
+    await notify_alert_status_change(
+        alert_id=alert.id,
+        old_status=old_status,
+        new_status=alert.status,
+        resolved_at=alert.resolved_at,
+    )
+    await _broadcast_count_update(db)
+
     return alert
