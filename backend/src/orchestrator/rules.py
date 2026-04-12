@@ -93,6 +93,9 @@ def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optiona
             import base64
             frame_data = base64.b64decode(frame_data)
 
+        # TECH DEBT: Synchronous network I/O.
+        # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades,
+        # the IPC bus will back up. V2 must offload this to a Celery background worker.
         object_name = upload_incident_clip(
             file_data=frame_data,
             incident_id=str(incident_id),
