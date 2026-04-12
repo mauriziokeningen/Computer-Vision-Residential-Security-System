@@ -1,0 +1,8 @@
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.4
+tqdm>=4.66
+torch>=2.2
+opencv-python>=4.9
+mediapipe>=0.10.14
+requests>=2.32

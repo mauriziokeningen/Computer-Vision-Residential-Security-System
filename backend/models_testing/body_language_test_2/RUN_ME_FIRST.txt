@@ -1,0 +1,4 @@
+1) Create and activate a Python virtual environment.
+2) Install requirements.txt.
+3) Run: python infer_webcam.py --min-confidence 0.62
+4) If the wrong camera opens, try camera indices 1 or 2 by editing the script or using --camera-index if available.
