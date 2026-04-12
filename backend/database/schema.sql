@@ -2,6 +2,7 @@
 -- 1. EXTENSIONES DEL SISTEMA
 -- ==============================================================================
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ==============================================================================
 -- 2. TABLAS PADRE (Entidades Independientes)
