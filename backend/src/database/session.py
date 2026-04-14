@@ -1,5 +1,5 @@
 import os
-import time
+import asyncio
 import logging
 from pathlib import Path
 from sqlalchemy import create_engine, text
@@ -34,7 +34,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def init_db(retries: int = 20, delay: float = 2.0) -> None:
+async def init_db(retries: int = 20, delay: float = 2.0) -> None:
     last_error = None
 
     for attempt in range(1, retries + 1):
@@ -60,7 +60,7 @@ def init_db(retries: int = 20, delay: float = 2.0) -> None:
                 retries,
                 delay,
             )
-            time.sleep(delay)
+            await asyncio.sleep(delay)
 
         except Exception:
             logger.exception("Database initialization failed.")

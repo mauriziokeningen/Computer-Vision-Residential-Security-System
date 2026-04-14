@@ -13,21 +13,21 @@ from pydantic import BaseModel, Field
 class CameraCreate(BaseModel):
     """Schema for creating a new camera. All fields required."""
     location: str = Field(
-        ..., 
-        min_length=1, 
-        max_length=250, 
+        ...,
+        min_length=1,
+        max_length=250,
         json_schema_extra={"example": "Lobby principal - Edificio A"}
     )
     ip_address: str = Field(
-        ..., 
-        min_length=7, 
-        max_length=250, 
+        ...,
+        min_length=7,
+        max_length=250,
         json_schema_extra={"example": "192.168.1.100"}
     )
     status: str = Field(
-        ..., 
-        min_length=1, 
-        max_length=100, 
+        ...,
+        min_length=1,
+        max_length=100,
         json_schema_extra={"example": "ACTIVE"}
     )
 
@@ -53,15 +53,21 @@ class CameraResponse(BaseModel):
 
 class PersonBase(BaseModel):
     full_name: str = Field(
-        ..., 
-        json_schema_extra={"example": "Mauricio"}, 
+        ...,
+        json_schema_extra={"example": "Mauricio"},
         description="Full name"
     )
     person_type: str = Field(
-        ..., 
-        json_schema_extra={"example": "RESIDENT"}, 
-        description="Tipo (RESIDENT, VISITOR, STAFF)"
+        ...,
+        json_schema_extra={"example": "RESIDENT"},
+        description="Type (RESIDENT, VISITOR, STAFF)"
     )
+    building: Optional[str] = Field(None, description="Building or tower")
+    apartment: Optional[str] = Field(None, description="Apartment or unit")
+    phone: Optional[str] = Field(None, description="Phone number")
+    email: Optional[str] = Field(None, description="Email address")
+    valid_from: Optional[datetime] = Field(None, description="Visitor access start")
+    valid_until: Optional[datetime] = Field(None, description="Visitor access end")
 
 
 class PersonCreate(PersonBase):
@@ -89,8 +95,8 @@ class AlertCreate(BaseModel):
     """Schema for creating a new alert."""
     incident_id: Optional[UUID] = Field(None, description="UUID of the related incident")
     message: str = Field(
-        ..., 
-        min_length=1, 
+        ...,
+        min_length=1,
         json_schema_extra={"example": "Arma detectada en Lobby principal"}
     )
 
@@ -110,3 +116,26 @@ class AlertResponse(BaseModel):
     resolved_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
+
+
+# --- INCIDENT SCHEMAS ---
+
+class IncidentResponse(BaseModel):
+    id: UUID
+    created_at: datetime
+    incident_metadata: dict
+
+    model_config = {"from_attributes": True}
+
+
+class EventSimulation(BaseModel):
+    module: str = Field(..., description="AI module name: face, weapons, pose")
+    camera_id: str = Field(..., description="Synthetic camera identifier")
+    detections: List[dict] = Field(..., description="Raw module detections")
+
+
+class SimulationResponse(BaseModel):
+    incident_id: Optional[UUID]
+    alert_message: Optional[str]
+    priority: str
+    rule_triggered: str

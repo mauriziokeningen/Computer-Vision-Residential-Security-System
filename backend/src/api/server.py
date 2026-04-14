@@ -18,8 +18,7 @@ logger = logging.getLogger("APIServer")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manages startup and shutdown events for the application."""
-    init_db()
+    await init_db()
 
     try:
         ensure_bucket_exists()
@@ -36,7 +35,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Residential Security System API",
     description="Core backend for video ingestion, AI evaluation, and incident management.",
-    version="1.0.1",
+    version="1.0.3",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     lifespan=lifespan,
@@ -73,7 +72,7 @@ async def health_check():
         content={
             "status": "healthy",
             "service": "Core Backend API",
-            "version": "1.0.1"
+            "version": "1.0.3",
         },
-        status_code=200
+        status_code=200,
     )
