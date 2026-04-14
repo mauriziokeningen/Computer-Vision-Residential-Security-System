@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -23,9 +22,7 @@ def train(args: argparse.Namespace) -> Path:
     torch.set_num_threads(1)
 
     x, y = make_dataset(n_per_class=args.samples_per_class, seq_len=CONFIG.sequence_length, seed=args.seed)
-    x_train, x_val, y_train, y_val = train_test_split(
-        x, y, test_size=0.2, random_state=args.seed, stratify=y
-    )
+    x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2, random_state=args.seed, stratify=y)
 
     train_ds = TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train))
     val_ds = TensorDataset(torch.from_numpy(x_val), torch.from_numpy(y_val))
@@ -35,7 +32,7 @@ def train(args: argparse.Namespace) -> Path:
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     model = TemporalActionNet(input_size=feature_size(), num_classes=len(CLASS_NAMES)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
 
     best_acc = 0.0
     best_state = None
@@ -86,7 +83,7 @@ def train(args: argparse.Namespace) -> Path:
         class_names=CLASS_NAMES,
         sequence_length=CONFIG.sequence_length,
         meta={
-            "trained_on": "synthetic_motion_bootstrap",
+            "trained_on": "synthetic_motion_improved_bootstrap",
             "best_val_acc": float(best_acc),
             "epochs": int(args.epochs),
             "samples_per_class": int(args.samples_per_class),
@@ -98,12 +95,12 @@ def train(args: argparse.Namespace) -> Path:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train bootstrap checkpoint on synthetic motion data.")
-    parser.add_argument("--output", type=str, default=str(CONFIG.checkpoint_path))
-    parser.add_argument("--samples-per-class", type=int, default=900)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser = argparse.ArgumentParser(description="Train improved bootstrap checkpoint on synthetic motion data.")
+    parser.add_argument("--output", type=str, default=str(CONFIG.models_root / "bootstrap_temporal_action_net_improved.pt"))
+    parser.add_argument("--samples-per-class", type=int, default=1400)
+    parser.add_argument("--epochs", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=8e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
