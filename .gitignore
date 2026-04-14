@@ -8,6 +8,7 @@
 /node_modules
 
 # Python cache and temporary environments
+__pycache__/
 /backend/__pycache__/
 *.pyc
 *.pyo
@@ -34,16 +35,34 @@ env/
 *.log
 /logs
 
+# Local Audit and Diff Logs
+repo_audit.txt
+backend/review_diff*.txt
+
 # =======================================================
 # 3. LARGE DATASETS & TRAINING OUTPUT (CRITICAL)
 # =======================================================
+
+# Universal Deep Learning Weights, Archives, and Notebooks
+*.pt
+*.pth
+*.npz
+*.onnx
+*.ipynb
+
+# Facial Recognition Test Photos
+backend/models_testing/Facial Recognition/photos/
+
+# Armando's Experimental Datasets
+**/models_testing/body_language_test_2/data/
+
 **/models_testing/Body Language/NTU_dataset/
 **/models_testing/Body Language/*.zip
 **/models_testing/Facial Recognition/data/
 **/models_testing/Facial Recognition/face_rec_env/
 **/models_testing/Facial Recognition/lfw-deepfunneled/
 
-# TT1 Datasets y archivos viejos (se mantienen por seguridad)
+# Legacy TT1 Datasets and old files (kept for safety/archival)
 backend/mis_fotos/
 gun-and-knife-dataset/
 backend/referencia_mauricio.npy
