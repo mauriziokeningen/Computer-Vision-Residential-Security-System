@@ -1230,6 +1230,7 @@ function Residents({ query = '' }: { query?: string }) {
                                         accept="image/jpeg,image/png"
                                         className="hidden"
                                         onChange={(e) => setSlotFile(slotIndex, e.target.files?.[0] ?? null)}
+                                        onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
                                       />
                                       <span className="inline-flex items-center rounded-md border px-3 py-1 text-xs cursor-pointer bg-white hover:bg-slate-100">
                                         {file ? 'Retake' : 'Capture'}
