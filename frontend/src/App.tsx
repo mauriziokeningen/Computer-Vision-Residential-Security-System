@@ -155,8 +155,24 @@ function buildWsUrl(path: string) {
   return `${wsProtocol}://${window.location.host}${path}`;
 }
 
+function parseApiDate(iso: string) {
+  if (!iso) return new Date(NaN);
+
+  const normalized = iso.trim().replace(' ', 'T');
+  const tzMatch = normalized.match(/(Z|[+-]\d{2}:\d{2})$/i);
+  const timezone = tzMatch ? tzMatch[1] : 'Z';
+  const withoutTimezone = tzMatch ? normalized.slice(0, -timezone.length) : normalized;
+  const fractionalMatch = withoutTimezone.match(/\.(\d+)$/);
+  const base = fractionalMatch ? withoutTimezone.slice(0, -(fractionalMatch[0].length)) : withoutTimezone;
+  const milliseconds = fractionalMatch
+    ? `.${fractionalMatch[1].slice(0, 3).padEnd(3, '0')}`
+    : '';
+
+  return new Date(`${base}${milliseconds}${timezone}`);
+}
+
 function formatTime(iso: string) {
-  const date = new Date(iso);
+  const date = parseApiDate(iso);
   return date.toLocaleString('es-MX', {
     hour: '2-digit',
     minute: '2-digit',
@@ -297,26 +313,62 @@ function Dashboard({ alertCounts }: { alertCounts: AlertCounts }) {
   const [error, setError] = useState('');
   const [statsSeries, setStatsSeries] = useState<{ t: string; a: number }[]>([]);
 
-  useEffect(() => {
-    apiFetch<ApiAlert[]>('/alerts/?limit=20')
-      .then((data) => {
-        setRecentAlerts(data);
-        const now = new Date();
-        const buckets: Record<string, number> = {};
-        for (let h = 7; h >= 0; h--) {
-          const d = new Date(now);
-          d.setHours(now.getHours() - h);
-          buckets[String(d.getHours()).padStart(2, '0')] = 0;
-        }
-        data.forEach((a) => {
-          const h = String(new Date(a.created_at).getHours()).padStart(2, '0');
-          if (h in buckets) buckets[h]++;
-        });
-        setStatsSeries(Object.entries(buckets).map(([t, a]) => ({ t, a })));
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+  const buildHourlySeries = useCallback((alerts: ApiAlert[]) => {
+    const now = new Date();
+    const buckets = Array.from({ length: 8 }, (_, i) => {
+      const start = new Date(now);
+      start.setMinutes(0, 0, 0);
+      start.setHours(start.getHours() - (7 - i));
+
+      return {
+        startMs: start.getTime(),
+        endMs: start.getTime() + 60 * 60 * 1000,
+        t: start.toLocaleTimeString('es-MX', {
+          hour: '2-digit',
+          hour12: false,
+        }),
+        a: 0,
+      };
+    });
+
+    alerts.forEach((alert) => {
+      const alertMs = parseApiDate(alert.created_at).getTime();
+      const bucket = buckets.find((b) => alertMs >= b.startMs && alertMs < b.endMs);
+      if (bucket) bucket.a += 1;
+    });
+
+    setStatsSeries(buckets.map(({ t, a }) => ({ t, a })));
   }, []);
+
+  const loadDashboardAlerts = useCallback(async (showLoader = false) => {
+    if (showLoader) setLoading(true);
+    setError('');
+
+    try {
+      const data = await apiFetch<ApiAlert[]>('/alerts/?limit=100');
+      setRecentAlerts(data);
+      buildHourlySeries(data);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [buildHourlySeries]);
+
+  useEffect(() => {
+    loadDashboardAlerts(true);
+  }, [loadDashboardAlerts]);
+
+  useEffect(() => {
+    if (loading) return;
+    loadDashboardAlerts(false);
+  }, [
+    alertCounts.unread,
+    alertCounts.acknowledged,
+    alertCounts.resolved,
+    loadDashboardAlerts,
+    loading,
+  ]);
 
   const total = alertCounts.unread + alertCounts.acknowledged + alertCounts.resolved;
 
