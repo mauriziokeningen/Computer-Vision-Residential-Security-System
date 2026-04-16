@@ -136,7 +136,9 @@ async function ensureLocalWebcam(): Promise<ApiCamera> {
 }
 
 function localWebcamStreamUrl() {
-  return '/api/cameras/local-webcam/stream?source=0';
+  // Appending the current epoch timestamp forces the browser to bypass its 
+  // internal cache and initialize a new HTTP boundary stream upon every component mount.
+  return `/api/cameras/local-webcam/stream?source=0&t=${Date.now()}`;
 }
 
 function buildWsUrl(path: string) {
