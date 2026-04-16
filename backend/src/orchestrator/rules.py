@@ -74,13 +74,38 @@ def _create_incident(db, event: Dict[str, Any], rule_triggered: str, priority: s
     return incident
 
 def _create_alert(db, incident_id, message: str) -> Any:
-    from src.database.models import Alert
-    alert = Alert(incident_id=incident_id, message=message)
-    db.add(alert)
-    db.commit()
-    db.refresh(alert)
-    logger.debug(f"Alert created: {alert.id} -> {message}")
-    return alert
+    import urllib.request
+    import json
+    
+    # THE BRIDGE: Instead of writing to the DB in silence, Brain 2 hits Brain 1's API.
+    # This forces FastAPI to execute the database insert AND broadcast the WebSocket message.
+    url = "http://127.0.0.1:8000/api/alerts/"
+    payload = {
+        "incident_id": str(incident_id) if incident_id else None,
+        "message": message
+    }
+    headers = {"Content-Type": "application/json"}
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode('utf-8'), 
+            headers=headers, 
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=2.0) as response:
+            logger.debug(f"Alert pushed to API successfully: {message}")
+            return json.loads(response.read().decode())
+            
+    except Exception as e:
+        logger.error(f"Failed to push alert to API, falling back to direct DB write: {e}")
+        # Fallback just in case FastAPI is rebooting
+        from src.database.models import Alert
+        alert = Alert(incident_id=incident_id, message=message)
+        db.add(alert)
+        db.commit()
+        db.refresh(alert)
+        return alert
 
 def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optional[str]:
     if not frame_data:

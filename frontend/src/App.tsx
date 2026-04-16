@@ -143,6 +143,15 @@ function localWebcamStreamUrl() {
 
 function buildWsUrl(path: string) {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  
+  // import.meta.env.DEV is natively injected by Vite. 
+  // This guarantees we hit the FastAPI backend port locally, whether you 
+  // access the app via 'localhost', '127.0.0.1', or '192.168.x.x'.
+  if (import.meta.env.DEV) {
+    return `${wsProtocol}://${window.location.hostname}:8000${path}`;
+  }
+  
+  // In production, rely on standard unified ingress routing.
   return `${wsProtocol}://${window.location.host}${path}`;
 }
 
@@ -598,15 +607,42 @@ function Alerts({ query = '' }: { query?: string }) {
     load();
   }, [load]);
 
+  // 2. ALERT LIST WEBSOCKET (Inside Alerts component)
   useEffect(() => {
-    const ws = new WebSocket(buildWsUrl('/ws/alerts'));
-    ws.onmessage = (ev) => {
-      try {
-        const m = JSON.parse(ev.data);
-        if (m.event_type === 'NEW_ALERT' || m.event_type === 'ALERT_STATUS_CHANGED') load();
-      } catch {}
+    let ws: WebSocket;
+    let reconnectTimeout: NodeJS.Timeout;
+    let isMounted = true;
+
+    const connect = () => {
+      if (!isMounted) return;
+      ws = new WebSocket(buildWsUrl('/ws/alerts'));
+      
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          // If a new alert happens, or a guard acknowledges one, refetch the list
+          if (m.event_type === 'NEW_ALERT' || m.event_type === 'ALERT_STATUS_CHANGED') {
+            load();
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        if (isMounted) {
+          reconnectTimeout = setTimeout(connect, 3000); // Auto-reconnect
+        }
+      };
+
+      ws.onerror = () => ws.close();
     };
-    return () => ws.close();
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
   }, [load]);
 
   const updateStatus = async (id: string, status: AlertStatus) => {
@@ -1605,22 +1641,52 @@ export default function App() {
   }, [tab]);
 
   useEffect(() => {
-    const ws = new WebSocket(buildWsUrl('/ws/alerts'));
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.event_type === 'ALERT_COUNT_UPDATE') {
-          setAlertCounts({
-            unread: msg.data.unread,
-            acknowledged: msg.data.acknowledged,
-            resolved: msg.data.resolved,
-          });
+    let ws: WebSocket;
+    let reconnectTimeout: NodeJS.Timeout;
+    let isMounted = true; // Prevents memory leaks if you navigate away
+
+    const connect = () => {
+      if (!isMounted) return;
+      
+      ws = new WebSocket(buildWsUrl('/ws/alerts'));
+
+      ws.onopen = () => {
+        if (isMounted) setWsConnected(true);
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.event_type === 'ALERT_COUNT_UPDATE') {
+            setAlertCounts({
+              unread: msg.data.unread,
+              acknowledged: msg.data.acknowledged,
+              resolved: msg.data.resolved,
+            });
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        if (isMounted) {
+          setWsConnected(false);
+          // The Auto-Reconnect Magic: Wait 3 seconds and try again
+          reconnectTimeout = setTimeout(connect, 3000);
         }
-      } catch {}
+      };
+
+      ws.onerror = () => {
+        ws.close(); // Force a close event to trigger the retry loop
+      };
     };
-    return () => ws.close();
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
   }, []);
 
   useEffect(() => {
