@@ -1,3 +1,24 @@
+/**
+ * @module SecurityDashboardOrchestrator
+ * * Root orchestration layer for the Residential Security System frontend.
+ * Manages global view state, real-time WebSocket connections (IPC with FastAPI), 
+ * and distributes telemetry to sub-components (Dashboard, LiveMonitoring, etc.).
+ * * Architectural Decisions & Trade-offs:
+ * - State Management: We utilize lifted React state (`useState` at the App level) for 
+ * `alertCounts` rather than a heavy global store (Redux/Zustand). This minimizes 
+ * bundle size and complexity since the state is strictly unidirectional (downward).
+ * - Real-Time Bypassing: We append epoch timestamps (`?t=${Date.now()}`) to the 
+ * MJPEG stream URLs to aggressively bypass browser-level caching and guarantee 
+ * real-time frame ingestion from the backend.
+ * * System Invariants (Immutable Rules):
+ * 1. Lifecycle Decoupling: Network fetches MUST NOT depend on localized UI state 
+ * (like `loading` booleans). The initial mount effect `[]` and the reactive WebSocket 
+ * effect `[alertCounts]` must remain strictly isolated to prevent infinite render 
+ * loops (DDoS condition on the backend).
+ * 2. Native Parsing: All API ISO-8601 timestamps must be parsed via the native V8/WebKit 
+ * `new Date()` engine. Do not introduce custom Regex parsers.
+ */
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -157,22 +178,17 @@ function buildWsUrl(path: string) {
 
 function parseApiDate(iso: string) {
   if (!iso) return new Date(NaN);
-
-  const normalized = iso.trim().replace(' ', 'T');
-  const tzMatch = normalized.match(/(Z|[+-]\d{2}:\d{2})$/i);
-  const timezone = tzMatch ? tzMatch[1] : 'Z';
-  const withoutTimezone = tzMatch ? normalized.slice(0, -timezone.length) : normalized;
-  const fractionalMatch = withoutTimezone.match(/\.(\d+)$/);
-  const base = fractionalMatch ? withoutTimezone.slice(0, -(fractionalMatch[0].length)) : withoutTimezone;
-  const milliseconds = fractionalMatch
-    ? `.${fractionalMatch[1].slice(0, 3).padEnd(3, '0')}`
-    : '';
-
-  return new Date(`${base}${milliseconds}${timezone}`);
+  // SQLAlchemy/Postgres often leaks naive timestamps with spaces instead of 'T'
+  // This strictly polyfills it for WebKit/Safari engines to prevent 'Invalid Date'
+  let normalized = iso.trim().replace(' ', 'T');
+  if (!normalized.endsWith('Z') && !normalized.match(/[+-]\d{2}:\d{2}$/)) {
+    normalized += 'Z'; // Assume UTC for system consistency
+  }
+  return new Date(normalized);
 }
 
 function formatTime(iso: string) {
-  const date = parseApiDate(iso);
+  const date = parseApiDate(iso); // Re-apply the polyfill here
   return date.toLocaleString('es-MX', {
     hour: '2-digit',
     minute: '2-digit',
@@ -332,7 +348,8 @@ function Dashboard({ alertCounts }: { alertCounts: AlertCounts }) {
     });
 
     alerts.forEach((alert) => {
-      const alertMs = parseApiDate(alert.created_at).getTime();
+      // Use the polyfill!
+      const alertMs = parseApiDate(alert.created_at).getTime(); 
       const bucket = buckets.find((b) => alertMs >= b.startMs && alertMs < b.endMs);
       if (bucket) bucket.a += 1;
     });
@@ -355,19 +372,20 @@ function Dashboard({ alertCounts }: { alertCounts: AlertCounts }) {
     }
   }, [buildHourlySeries]);
 
+  // 1. Initial Mount Load
   useEffect(() => {
     loadDashboardAlerts(true);
   }, [loadDashboardAlerts]);
 
+  // 2. Real-Time WebSocket Refresh
+  // STRICLY decoupled from the 'loading' state to prevent infinite DDoS loops.
   useEffect(() => {
-    if (loading) return;
     loadDashboardAlerts(false);
   }, [
     alertCounts.unread,
     alertCounts.acknowledged,
     alertCounts.resolved,
-    loadDashboardAlerts,
-    loading,
+    loadDashboardAlerts
   ]);
 
   const total = alertCounts.unread + alertCounts.acknowledged + alertCounts.resolved;
@@ -1715,6 +1733,16 @@ export default function App() {
               acknowledged: msg.data.acknowledged,
               resolved: msg.data.resolved,
             });
+          } else if (msg.event_type === 'NEW_ALERT' || msg.event_type === 'ALERT_STATUS_CHANGED') {
+            // The Architecture Fix: Manually trigger a count sync when raw events arrive.
+            // This safely updates global state, pushing the new data down to the Dashboard cleanly.
+            Promise.all([
+              apiFetch<{ count: number }>('/alerts/count?status=UNREAD'),
+              apiFetch<{ count: number }>('/alerts/count?status=ACKNOWLEDGED'),
+              apiFetch<{ count: number }>('/alerts/count?status=RESOLVED'),
+            ])
+              .then(([u, a, r]) => setAlertCounts({ unread: u.count, acknowledged: a.count, resolved: r.count }))
+              .catch(() => {});
           }
         } catch {}
       };
