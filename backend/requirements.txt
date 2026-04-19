@@ -25,8 +25,9 @@ ml_dtypes==0.3.2
 
 # --- Computer Vision & Biometrics ---
 insightface==0.7.3
-# CRITICAL FIX: Only use the headless version on servers to prevent GUI library conflicts
-opencv-python-headless==4.9.0.80
+# CRITICAL FIX: Using standard opencv-python (4.10.0.84) for Windows local development 
+# to support DirectShow webcams and bridge the NumPy 1.x/2.x C-API gap.
+opencv-python==4.10.0.84
 deepface==0.0.95
 retina-face==0.0.17
 ultralytics==8.4.37
@@ -39,6 +40,7 @@ pandas==2.3.3
 tqdm==4.67.1
 rich==14.2.0
 requests==2.32.5
+pyzmq==26.0.0  # Required for the background AI worker video stream
 
 # --- Testing (CRITICAL for CI/CD) ---
 pytest==9.0.2

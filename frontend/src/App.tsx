@@ -1,5 +1,25 @@
-import React, { useState } from 'react';
-import WebcamFeed from './components/WebcamFeed';
+/**
+ * @module SecurityDashboardOrchestrator
+ * * Root orchestration layer for the Residential Security System frontend.
+ * Manages global view state, real-time WebSocket connections (IPC with FastAPI), 
+ * and distributes telemetry to sub-components (Dashboard, LiveMonitoring, etc.).
+ * * Architectural Decisions & Trade-offs:
+ * - State Management: We utilize lifted React state (`useState` at the App level) for 
+ * `alertCounts` rather than a heavy global store (Redux/Zustand). This minimizes 
+ * bundle size and complexity since the state is strictly unidirectional (downward).
+ * - Real-Time Bypassing: We append epoch timestamps (`?t=${Date.now()}`) to the 
+ * MJPEG stream URLs to aggressively bypass browser-level caching and guarantee 
+ * real-time frame ingestion from the backend.
+ * * System Invariants (Immutable Rules):
+ * 1. Lifecycle Decoupling: Network fetches MUST NOT depend on localized UI state 
+ * (like `loading` booleans). The initial mount effect `[]` and the reactive WebSocket 
+ * effect `[alertCounts]` must remain strictly isolated to prevent infinite render 
+ * loops (DDoS condition on the backend).
+ * 2. Native Parsing: All API ISO-8601 timestamps must be parsed via the native V8/WebKit 
+ * `new Date()` engine. Do not introduce custom Regex parsers.
+ */
+
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   AlertTriangle,
@@ -23,7 +43,9 @@ import {
   Clock,
   Cpu,
   Database,
-  Eye,
+  RefreshCw,
+  Loader2,
+  XCircle,
 } from 'lucide-react';
 import {
   Card,
@@ -50,89 +72,156 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 
-// --- Fake data ---
-type AlertItem = {
+type AlertStatus = 'UNREAD' | 'ACKNOWLEDGED' | 'RESOLVED';
+
+interface ApiAlert {
   id: string;
-  type: string;
-  time: string;
+  incident_id: string | null;
+  message: string;
+  status: AlertStatus;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+interface ApiIncident {
+  id: string;
+  created_at: string;
+  incident_metadata: {
+    rule_triggered?: string;
+    priority?: string;
+    module?: string;
+    camera_id?: string;
+    timestamp?: string;
+    detections?: any[];
+  };
+}
+
+interface ApiPerson {
+  id: string;
+  full_name: string;
+  person_type: string;
+  building?: string | null;
+  apartment?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  valid_from?: string | null;
+  valid_until?: string | null;
+  created_at: string;
+}
+
+interface ApiCamera {
+  id: string;
   location: string;
-  severity: 'low' | 'high' | 'critical';
-  details: string;
-  modules: string[];
+  ip_address: string;
   status: string;
-};
+}
 
-const alerts: AlertItem[] = [
-  {
-    id: 'AL-01782',
-    type: 'Desconocido',
-    time: '15:32',
-    location: 'Acceso Torre A',
-    severity: 'high',
-    details: 'Rostro no registrado. Intento de acceso.',
-    modules: ['Facial'],
-    status: 'Pendiente',
-  },
-  {
-    id: 'AL-01781',
-    type: 'Pelea',
-    time: '14:58',
-    location: 'Patio central',
-    severity: 'critical',
-    details: 'Golpes y empujones detectados.',
-    modules: ['Pose'],
-    status: 'En curso',
-  },
-  {
-    id: 'AL-01780',
-    type: 'Arma (cuchillo)',
-    time: '14:05',
-    location: 'Estacionamiento B2',
-    severity: 'critical',
-    details: 'Detección de objeto punzocortante.',
-    modules: ['Objetos'],
-    status: 'Escalada',
-  },
-  {
-    id: 'AL-01779',
-    type: 'Acceso permitido',
-    time: '13:41',
-    location: 'Acceso Torre B',
-    severity: 'low',
-    details: 'Residente: D. Orozco.',
-    modules: ['Facial'],
-    status: 'Cerrado',
-  },
-];
+interface EvidenceFile {
+  object_name: string;
+  size: number;
+  last_modified?: string | null;
+  content_type?: string | null;
+}
 
-const statsSeries = [
-  { t: '08', a: 2 },
-  { t: '09', a: 1 },
-  { t: '10', a: 3 },
-  { t: '11', a: 2 },
-  { t: '12', a: 4 },
-  { t: '13', a: 2 },
-  { t: '14', a: 5 },
-  { t: '15', a: 3 },
-];
+interface AlertCounts {
+  unread: number;
+  acknowledged: number;
+  resolved: number;
+}
 
-const feedOverlays = [
-  {
-    label: 'Rostro: Desconocido',
-    conf: 0.87,
-    className: 'border-red-500 text-red-600',
-  },
-  {
-    label: 'Pose: Empujón',
-    conf: 0.81,
-    className: 'border-amber-500 text-amber-600',
-  },
-  {
-    label: 'Objeto: Cuchillo',
-    conf: 0.92,
-    className: 'border-red-500 text-red-600',
-  },
-];
+const API = '/api';
+
+async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
+  const isFormData = opts?.body instanceof FormData;
+  const res = await fetch(`${API}${path}`, {
+    headers: isFormData ? undefined : { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail ?? detail;
+    } catch {}
+    throw new Error(detail);
+  }
+
+  return res.json();
+}
+
+async function ensureLocalWebcam(): Promise<ApiCamera> {
+  return apiFetch<ApiCamera>('/cameras/local-webcam/ensure', {
+    method: 'POST',
+  });
+}
+
+function localWebcamStreamUrl() {
+  // Appending the current epoch timestamp forces the browser to bypass its 
+  // internal cache and initialize a new HTTP boundary stream upon every component mount.
+  return `/api/cameras/local-webcam/stream?source=0&t=${Date.now()}`;
+}
+
+function buildWsUrl(path: string) {
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  
+  // import.meta.env.DEV is natively injected by Vite. 
+  // This guarantees we hit the FastAPI backend port locally, whether you 
+  // access the app via 'localhost', '127.0.0.1', or '192.168.x.x'.
+  if (import.meta.env.DEV) {
+    return `${wsProtocol}://${window.location.hostname}:8000${path}`;
+  }
+  
+  // In production, rely on standard unified ingress routing.
+  return `${wsProtocol}://${window.location.host}${path}`;
+}
+
+function parseApiDate(iso: string) {
+  if (!iso) return new Date(NaN);
+  // SQLAlchemy/Postgres often leaks naive timestamps with spaces instead of 'T'
+  // This strictly polyfills it for WebKit/Safari engines to prevent 'Invalid Date'
+  let normalized = iso.trim().replace(' ', 'T');
+  if (!normalized.endsWith('Z') && !normalized.match(/[+-]\d{2}:\d{2}$/)) {
+    normalized += 'Z'; // Assume UTC for system consistency
+  }
+  return new Date(normalized);
+}
+
+function formatTime(iso: string) {
+  const date = parseApiDate(iso); // Re-apply the polyfill here
+  return date.toLocaleString('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+  });
+}
+
+function priorityToSeverity(p?: string): 'low' | 'high' | 'critical' {
+  if (p === 'CRITICAL') return 'critical';
+  if (p === 'HIGH' || p === 'MEDIUM') return 'high';
+  return 'low';
+}
+
+function ErrorBanner({ msg, onClose }: { msg: string; onClose: () => void }) {
+  return (
+    <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm">
+      <XCircle className="h-4 w-4 shrink-0" />
+      <span className="flex-1">{msg}</span>
+      <button onClick={onClose} className="text-red-400 hover:text-red-600">✕</button>
+    </div>
+  );
+}
+
+function SuccessBanner({ msg, onClose }: { msg: string; onClose: () => void }) {
+  return (
+    <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg px-4 py-3 text-sm">
+      <CheckCircle2 className="h-4 w-4 shrink-0" />
+      <span className="flex-1">{msg}</span>
+      <button onClick={onClose} className="text-emerald-400 hover:text-emerald-600">✕</button>
+    </div>
+  );
+}
 
 function SeverityBadge({ level }: { level: 'low' | 'high' | 'critical' }) {
   const map: Record<string, string> = {
@@ -148,90 +237,18 @@ function SeverityBadge({ level }: { level: 'low' | 'high' | 'critical' }) {
   return <Badge className={`${map[level]} rounded-full`}>{label[level]}</Badge>;
 }
 
-function Header() {
-  return (
-    <div className="flex items-center justify-between py-4">
-      <div className="flex items-center gap-3">
-        <Siren className="h-7 w-7" />
-        <div>
-          <h1 className="text-xl font-semibold leading-none">
-            Seguridad UH · Panel
-          </h1>
-          <p className="text-sm text-slate-500">Monitoreo en tiempo real · Prototipo</p>
-        </div>
-      </div>
-      <div className="flex gap-2 items-center">
-        <Button variant="outline" className="gap-2">
-          <Search className="h-4 w-4" />
-          Buscar
-        </Button>
-        <Button className="gap-2">
-          <Bell className="h-4 w-4" />
-          Notificaciones
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-export default function App() {
-  const [tab, setTab] = useState<
-    'dashboard' | 'live' | 'alerts' | 'incidents' | 'residents' | 'access' | 'settings'
-  >('dashboard');
-
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
-      <div className="max-w-7xl mx-auto p-4">
-        <Header />
-
-        <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
-          {/* Sidebar */}
-          <div className="hidden lg:block">
-            <Card className="sticky top-4">
-              <CardHeader>
-                <CardTitle className="text-base">Navegación</CardTitle>
-                <CardDescription>Secciones del prototipo</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <nav className="grid gap-1">
-                  {[
-                    { id: 'dashboard', icon: Gauge, label: 'Dashboard' },
-                    { id: 'live', icon: Camera, label: 'Monitoreo en vivo' },
-                    { id: 'alerts', icon: AlertTriangle, label: 'Alertas' },
-                    { id: 'incidents', icon: ListChecks, label: 'Incidentes' },
-                    { id: 'residents', icon: Users, label: 'Residentes' },
-                    { id: 'access', icon: DoorOpen, label: 'Control de Acceso' },
-                    { id: 'settings', icon: Settings, label: 'Configuración' },
-                  ].map((it) => (
-                    <Button
-                      key={it.id}
-                      variant={tab === it.id ? 'secondary' : 'ghost'}
-                      className="justify-start gap-2"
-                      onClick={() => setTab(it.id as any)}
-                    >
-                      <it.icon className="h-4 w-4" />
-                      {it.label}
-                    </Button>
-                  ))}
-                </nav>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Content */}
-          <div>
-            {tab === 'dashboard' && <Dashboard />}
-            {tab === 'live' && <LiveMonitoring />}
-            {tab === 'alerts' && <Alerts />}
-            {tab === 'incidents' && <IncidentDetail />}
-            {tab === 'residents' && <Residents />}
-            {tab === 'access' && <AccessGate />}
-            {tab === 'settings' && <SettingsPanel />}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+function StatusBadge({ status }: { status: AlertStatus }) {
+  const map: Record<AlertStatus, string> = {
+    UNREAD: 'bg-red-100 text-red-800',
+    ACKNOWLEDGED: 'bg-amber-100 text-amber-800',
+    RESOLVED: 'bg-emerald-100 text-emerald-800',
+  };
+  const label: Record<AlertStatus, string> = {
+    UNREAD: 'Sin leer',
+    ACKNOWLEDGED: 'Atendida',
+    RESOLVED: 'Resuelta',
+  };
+  return <Badge className={`${map[status]} rounded-full`}>{label[status]}</Badge>;
 }
 
 function KPI({
@@ -263,14 +280,125 @@ function KPI({
   );
 }
 
-function Dashboard() {
+function Header({
+  unreadCount,
+  searchQuery,
+  onSearchChange,
+  onOpenAlerts,
+}: {
+  unreadCount: number;
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  onOpenAlerts: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-center gap-3">
+        <Siren className="h-7 w-7" />
+        <div>
+          <h1 className="text-xl font-semibold leading-none">Seguridad UH · Panel</h1>
+          <p className="text-sm text-slate-500">Monitoreo en tiempo real · TT2</p>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative min-w-[260px]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Buscar alertas, incidentes o personas"
+            className="pl-9"
+          />
+        </div>
+        <Button onClick={onOpenAlerts} className="gap-2 relative">
+          <Bell className="h-4 w-4" />Notificaciones
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </span>
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ alertCounts }: { alertCounts: AlertCounts }) {
+  const [recentAlerts, setRecentAlerts] = useState<ApiAlert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [statsSeries, setStatsSeries] = useState<{ t: string; a: number }[]>([]);
+
+  const buildHourlySeries = useCallback((alerts: ApiAlert[]) => {
+    const now = new Date();
+    const buckets = Array.from({ length: 8 }, (_, i) => {
+      const start = new Date(now);
+      start.setMinutes(0, 0, 0);
+      start.setHours(start.getHours() - (7 - i));
+
+      return {
+        startMs: start.getTime(),
+        endMs: start.getTime() + 60 * 60 * 1000,
+        t: start.toLocaleTimeString('es-MX', {
+          hour: '2-digit',
+          hour12: false,
+        }),
+        a: 0,
+      };
+    });
+
+    alerts.forEach((alert) => {
+      // Use the polyfill!
+      const alertMs = parseApiDate(alert.created_at).getTime(); 
+      const bucket = buckets.find((b) => alertMs >= b.startMs && alertMs < b.endMs);
+      if (bucket) bucket.a += 1;
+    });
+
+    setStatsSeries(buckets.map(({ t, a }) => ({ t, a })));
+  }, []);
+
+  const loadDashboardAlerts = useCallback(async (showLoader = false) => {
+    if (showLoader) setLoading(true);
+    setError('');
+
+    try {
+      const data = await apiFetch<ApiAlert[]>('/alerts/?limit=100');
+      setRecentAlerts(data);
+      buildHourlySeries(data);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [buildHourlySeries]);
+
+  // 1. Initial Mount Load
+  useEffect(() => {
+    loadDashboardAlerts(true);
+  }, [loadDashboardAlerts]);
+
+  // 2. Real-Time WebSocket Refresh
+  // STRICLY decoupled from the 'loading' state to prevent infinite DDoS loops.
+  useEffect(() => {
+    loadDashboardAlerts(false);
+  }, [
+    alertCounts.unread,
+    alertCounts.acknowledged,
+    alertCounts.resolved,
+    loadDashboardAlerts
+  ]);
+
+  const total = alertCounts.unread + alertCounts.acknowledged + alertCounts.resolved;
+
   return (
     <div className="space-y-4">
+      {error && <ErrorBanner msg={`Error cargando alertas: ${error}`} onClose={() => setError('')} />}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KPI icon={AlertTriangle} label="Alertas hoy" value="13" sub="3 críticas, 4 altas" />
-        <KPI icon={ShieldCheck} label="Accesos permitidos" value="128" sub="Últimas 24 h" />
-        <KPI icon={CircleX} label="Accesos bloqueados" value="12" sub="Rostros desconocidos" />
-        <KPI icon={Cpu} label="Latencia promedio" value="87 ms" sub="Procesamiento en borde" />
+        <KPI icon={AlertTriangle} label="Sin leer" value={String(alertCounts.unread)} sub="Requieren atención" />
+        <KPI icon={ShieldCheck} label="Atendidas" value={String(alertCounts.acknowledged)} sub="En seguimiento" />
+        <KPI icon={CircleX} label="Resueltas" value={String(alertCounts.resolved)} sub="Cerradas" />
+        <KPI icon={Cpu} label="Total" value={String(total)} sub="Todas las alertas" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -285,7 +413,7 @@ function Dashboard() {
                 <XAxis dataKey="t" />
                 <YAxis allowDecimals={false} />
                 <Tooltip />
-                <Line type="monotone" dataKey="a" strokeWidth={2} />
+                <Line type="monotone" dataKey="a" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -293,23 +421,24 @@ function Dashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Estado de servicios</CardTitle>
-            <CardDescription>Módulos del sistema</CardDescription>
+            <CardTitle>Estado de alertas</CardTitle>
+            <CardDescription>Distribución actual</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {[
-              { name: 'Reconocimiento facial', ok: true },
-              { name: 'Análisis de pose', ok: true },
-              { name: 'Detección de objetos', ok: true },
-              { name: 'Base de datos', ok: true },
-              { name: 'Notificaciones', ok: false },
+              { label: 'Sin leer', value: alertCounts.unread, color: 'bg-red-500' },
+              { label: 'Atendidas', value: alertCounts.acknowledged, color: 'bg-amber-500' },
+              { label: 'Resueltas', value: alertCounts.resolved, color: 'bg-emerald-500' },
             ].map((s) => (
-              <div key={s.name} className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className={`h-2 w-2 rounded-full ${s.ok ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                  <span>{s.name}</span>
+              <div key={s.label} className="space-y-1">
+                <div className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <div className={`h-2 w-2 rounded-full ${s.color}`} />
+                    <span>{s.label}</span>
+                  </div>
+                  <span className="font-medium">{s.value}</span>
                 </div>
-                <Badge variant={s.ok ? 'default' : 'destructive'}>{s.ok ? 'OK' : 'Fallo'}</Badge>
+                <Progress value={total > 0 ? (s.value / total) * 100 : 0} />
               </div>
             ))}
           </CardContent>
@@ -319,58 +448,54 @@ function Dashboard() {
       <Card>
         <CardHeader>
           <CardTitle>Últimas alertas</CardTitle>
-          <CardDescription>Eventos recibidos en tiempo real</CardDescription>
+          <CardDescription>Datos reales desde la API</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {alerts.map((a) => (
-              <motion.div
-                key={a.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.25 }}
-              >
-                <Card
-                  className="border-l-4"
-                  style={{
-                    borderLeftColor:
-                      a.severity === 'critical'
-                        ? '#ef4444'
-                        : a.severity === 'high'
-                        ? '#f59e0b'
-                        : '#94a3b8',
-                  }}
+          {loading ? (
+            <div className="flex items-center gap-2 text-slate-500 text-sm p-4">
+              <Loader2 className="h-4 w-4 animate-spin" />Cargando alertas…
+            </div>
+          ) : recentAlerts.length === 0 ? (
+            <div className="text-slate-500 text-sm p-4">
+              No hay alertas. Simula un evento en la sección Incidentes.
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {recentAlerts.slice(0, 6).map((a) => (
+                <motion.div
+                  key={a.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.25 }}
                 >
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-base">{a.type}</CardTitle>
-                      <SeverityBadge level={a.severity} />
-                    </div>
-                    <CardDescription className="flex items-center gap-2">
-                      <Clock className="h-4 w-4" />
-                      {a.time} · {a.location}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="pt-0 text-sm space-y-2">
-                    <div className="text-slate-500">{a.details}</div>
-                    <div className="flex flex-wrap gap-1">
-                      {a.modules.map((m) => (
-                        <Badge key={m} variant="outline" className="rounded-full">
-                          {m}
-                        </Badge>
-                      ))}
-                    </div>
-                  </CardContent>
-                  <CardFooter className="pt-0">
-                    <Button variant="ghost" size="sm" className="gap-2">
-                      Ver detalle
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </CardFooter>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
+                  <Card
+                    className="border-l-4"
+                    style={{
+                      borderLeftColor:
+                        a.status === 'UNREAD'
+                          ? '#ef4444'
+                          : a.status === 'ACKNOWLEDGED'
+                          ? '#f59e0b'
+                          : '#10b981',
+                    }}
+                  >
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between">
+                        <StatusBadge status={a.status} />
+                        <CardDescription className="text-xs flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          {formatTime(a.created_at)}
+                        </CardDescription>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="pt-0 text-xs text-slate-600">
+                      {a.message.length > 60 ? a.message.slice(0, 60) + '…' : a.message}
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -378,154 +503,150 @@ function Dashboard() {
 }
 
 function LiveMonitoring() {
-  const wsRef = React.useRef<WebSocket | null>(null);
-  const [dets, setDets] = React.useState<any[]>([]);
-  const [frameSize, setFrameSize] = React.useState({ width: 640, height: 480 });
+  const [cameras, setCameras] = useState<ApiCamera[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [recentAlerts, setRecentAlerts] = useState<ApiAlert[]>([]);
 
-  React.useEffect(() => {
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws');
-    wsRef.current = ws;
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
 
-    ws.onmessage = (ev) => {
-      const data = JSON.parse(ev.data);
-      setDets(data.detections ?? []);
-    };
+    try {
+      await ensureLocalWebcam();
 
-    ws.onerror = (err) => {
-      console.error("WebSocket error:", err);
-    };
+      const [cameraData, alertData] = await Promise.all([
+        apiFetch<ApiCamera[]>('/cameras/?limit=20'),
+        apiFetch<ApiAlert[]>('/alerts/?limit=10'),
+      ]);
 
-    return () => ws.close();
+      setCameras(cameraData);
+      setRecentAlerts(alertData);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const handleFrame = (
-    canvas: HTMLCanvasElement,
-    width: number,
-    height: number
-  ) => {
-    setFrameSize({ width, height });
+  useEffect(() => {
+    load();
+    return () => {
+      fetch('/api/cameras/local-webcam/stop', { method: 'POST' }).catch(() => {});
+    };
+  }, [load]);
 
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-    const jpg = canvas.toDataURL('image/jpeg', 0.7);
-    ws.send(JSON.stringify({ image: jpg }));
-  };
+  const activeLocalCamera = cameras.find(
+    (camera) => camera.ip_address === 'local://0' && camera.status === 'ACTIVE'
+  );
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <Card className="xl:col-span-2">
         <CardHeader>
-          <CardTitle>
-            <Video className="h-5 w-5 inline mr-2" />
-            Cámara – Acceso Principal
-          </CardTitle>
-          <CardDescription>Detección y tracking en tiempo real</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>
+                <Video className="h-5 w-5 inline mr-2" />
+                Live monitoring
+              </CardTitle>
+              <CardDescription>
+                Backend-owned ingestion only. The browser does not capture hardware directly.
+              </CardDescription>
+            </div>
+            <Button variant="outline" className="gap-2" onClick={load}>
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
-        <CardContent>
-          <div className="relative aspect-video rounded-xl bg-black overflow-hidden">
-            <WebcamFeed className="absolute inset-0" onFrame={handleFrame} fps={8} />
 
-            <div className="absolute inset-0 pointer-events-none">
-              {dets.map((d, i) => {
-                const [x1, y1, x2, y2] = d.bbox ?? [0, 0, 0, 0];
+        <CardContent className="space-y-4">
+          {error && (
+            <ErrorBanner
+              msg={`Error loading live monitoring data: ${error}`}
+              onClose={() => setError('')}
+            />
+          )}
 
-                const mirroredX1 = frameSize.width - x2;
-
-                const left = `${(mirroredX1 / frameSize.width) * 100}%`;
-                const top = `${(y1 / frameSize.height) * 100}%`;
-                const width = `${((x2 - x1) / frameSize.width) * 100}%`;
-                const height = `${((y2 - y1) / frameSize.height) * 100}%`;
-
-                const name = d.name?.toLowerCase?.() ?? "";
-                const isWeapon = name.includes("knife") || name.includes("pistol");
-
-                if (!isWeapon) return null;
-
-                return (
-                  <div
-                    key={i}
-                    className="absolute border-2 border-red-500 shadow-[0_0_0_1px_rgba(255,255,255,0.15)]"
-                    style={{ left, top, width, height }}
-                  >
-                    <div className="absolute -top-6 left-0 bg-red-600 text-white text-[10px] px-2 py-1 rounded">
-                      {d.name} #{d.track_id ?? "-"} · {Math.round((d.conf ?? 0) * 100)}%
-                    </div>
-                  </div>
-                );
-              })}
+          {loading ? (
+            <div className="flex items-center gap-2 text-slate-500 text-sm p-4">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading camera status…
             </div>
-
-            <div className="absolute top-4 left-4 space-y-2">
-              {dets
-                .filter((d) => {
-                  const name = d.name?.toLowerCase?.() ?? "";
-                  return name.includes("knife") || name.includes("pistol");
-                })
-                .slice(0, 4)
-                .map((d, i) => (
-                  <div
-                    key={i}
-                    className="backdrop-blur bg-white/70 border px-3 py-1 rounded-lg text-xs border-red-500 text-red-600"
-                  >
-                    {d.name} #{d.track_id ?? "-"} · conf {Math.round((d.conf ?? 0) * 100)}%
-                  </div>
-                ))}
+          ) : activeLocalCamera ? (
+            <div className="aspect-video rounded-xl overflow-hidden border bg-black">
+              <img
+                src={localWebcamStreamUrl()}
+                alt="Backend-owned local webcam stream"
+                className="h-full w-full object-contain"
+                onError={() =>
+                  setError(
+                    'Could not load backend webcam stream. Make sure no other app is locking the laptop camera.'
+                  )
+                }
+              />
             </div>
+          ) : (
+            <div className="aspect-video rounded-xl border border-dashed bg-slate-50 text-slate-500 grid place-items-center p-6 text-center">
+              <div className="space-y-2">
+                <Camera className="h-8 w-8 mx-auto" />
+                <p className="font-medium">No active backend-owned video feed available.</p>
+                <p className="text-sm">
+                  The frontend no longer opens the laptop camera directly. A backend-owned local webcam
+                  feed will appear here once the backend can access device 0.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="grid md:grid-cols-2 gap-3">
+            {cameras.length === 0 ? (
+              <div className="rounded-lg border p-4 text-sm text-slate-500">
+                No cameras are registered yet.
+              </div>
+            ) : cameras.map((camera) => (
+              <div key={camera.id} className="rounded-lg border bg-white p-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-sm">{camera.location}</div>
+                  <Badge
+                    className={`${
+                      camera.status === 'ACTIVE'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-slate-100 text-slate-700'
+                    } rounded-full`}
+                  >
+                    {camera.status}
+                  </Badge>
+                </div>
+                <div className="text-xs text-slate-500 mt-1">{camera.ip_address}</div>
+              </div>
+            ))}
           </div>
         </CardContent>
-        <CardFooter className="flex items-center gap-3">
-          <Button variant="outline" className="gap-2">
-            <Eye className="h-4 w-4" />
-            Ver en pantalla completa
-          </Button>
-          <Button className="gap-2">
-            <Bell className="h-4 w-4" />
-            Enviar alerta
-          </Button>
-        </CardFooter>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Eventos recientes</CardTitle>
-          <CardDescription>Detecciones de armas</CardDescription>
+          <CardTitle>Recent security activity</CardTitle>
+          <CardDescription>Latest alert feed from the backend</CardDescription>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-72 pr-2">
+          <ScrollArea className="h-80 pr-2">
             <div className="space-y-3">
-              {dets.filter((d) => {
-                const name = d.name?.toLowerCase?.() ?? "";
-                return name.includes("knife") || name.includes("pistol");
-              }).length === 0 ? (
+              {recentAlerts.length === 0 ? (
                 <div className="p-3 rounded-lg border bg-white text-sm text-slate-500">
-                  Sin detecciones por el momento.
+                  No alerts have been generated yet.
                 </div>
-              ) : (
-                dets
-                  .filter((d) => {
-                    const name = d.name?.toLowerCase?.() ?? "";
-                    return name.includes("knife") || name.includes("pistol");
-                  })
-                  .map((d, i) => (
-                    <div key={i} className="p-3 rounded-lg border bg-white">
-                      <div className="flex items-center justify-between">
-                        <div className="font-medium text-sm">
-                          {d.name} #{d.track_id ?? "-"}
-                        </div>
-                        <Badge className="bg-red-100 text-red-800 rounded-full">
-                          Crítica
-                        </Badge>
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        confianza: {Math.round((d.conf ?? 0) * 100)}%
-                      </div>
-                      <div className="text-xs mt-1">
-                        Bounding box: [{d.bbox?.map((v: number) => Math.round(v)).join(", ")}]
-                      </div>
-                    </div>
-                  ))
-              )}
+              ) : recentAlerts.map((alert) => (
+                <div key={alert.id} className="p-3 rounded-lg border bg-white">
+                  <div className="flex items-center justify-between gap-2">
+                    <StatusBadge status={alert.status} />
+                    <span className="text-xs text-slate-500">{formatTime(alert.created_at)}</span>
+                  </div>
+                  <div className="text-sm mt-2 text-slate-700">{alert.message}</div>
+                </div>
+              ))}
             </div>
           </ScrollArea>
         </CardContent>
@@ -534,199 +655,839 @@ function LiveMonitoring() {
   );
 }
 
-function Alerts() {
+function Alerts({ query = '' }: { query?: string }) {
+  const [alerts, setAlerts] = useState<ApiAlert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [updating, setUpdating] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError('');
+    const q = statusFilter !== 'all' ? `?status=${statusFilter}&limit=50` : '?limit=50';
+    apiFetch<ApiAlert[]>(`/alerts/${q}`)
+      .then(setAlerts)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // 2. ALERT LIST WEBSOCKET (Inside Alerts component)
+  useEffect(() => {
+    let ws: WebSocket;
+    let reconnectTimeout: NodeJS.Timeout;
+    let isMounted = true;
+
+    const connect = () => {
+      if (!isMounted) return;
+      ws = new WebSocket(buildWsUrl('/ws/alerts'));
+      
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          // If a new alert happens, or a guard acknowledges one, refetch the list
+          if (m.event_type === 'NEW_ALERT' || m.event_type === 'ALERT_STATUS_CHANGED') {
+            load();
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        if (isMounted) {
+          reconnectTimeout = setTimeout(connect, 3000); // Auto-reconnect
+        }
+      };
+
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
+  }, [load]);
+
+  const updateStatus = async (id: string, status: AlertStatus) => {
+    setUpdating(id);
+    setUpdateError('');
+    try {
+      await apiFetch(`/alerts/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      load();
+    } catch (e: any) {
+      setUpdateError(`No se pudo actualizar: ${e.message}`);
+    } finally {
+      setUpdating(null);
+    }
+  };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredAlerts = alerts.filter((alert) =>
+    !normalizedQuery ||
+    alert.message.toLowerCase().includes(normalizedQuery) ||
+    alert.status.toLowerCase().includes(normalizedQuery)
+  );
+
   return (
     <div className="space-y-4">
+      {error && <ErrorBanner msg={`Error cargando alertas: ${error}`} onClose={() => setError('')} />}
+      {updateError && <ErrorBanner msg={updateError} onClose={() => setUpdateError('')} />}
+
       <div className="flex flex-col md:flex-row gap-3 md:items-end">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-1">
-          <div>
-            <Label>Severidad</Label>
-            <Select defaultValue="all">
-              <NativeSelect>
-                <SelectItem value="all">Todas</SelectItem>
-                <SelectItem value="critical">Crítica</SelectItem>
-                <SelectItem value="high">Alta</SelectItem>
-                <SelectItem value="low">Baja</SelectItem>
-              </NativeSelect>
-            </Select>
-          </div>
-          <div>
-            <Label>Módulo</Label>
-            <Select defaultValue="all">
-              <NativeSelect>
-                <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="facial">Facial</SelectItem>
-                <SelectItem value="pose">Pose</SelectItem>
-                <SelectItem value="objetos">Objetos</SelectItem>
-              </NativeSelect>
-            </Select>
-          </div>
-          <div>
-            <Label>Fecha</Label>
-            <Input type="date" />
-          </div>
+        <div className="flex-1">
+          <Label>Estado</Label>
+          <select
+            className="w-full border rounded-md px-3 py-2 text-sm mt-1"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">Todos</option>
+            <option value="UNREAD">Sin leer</option>
+            <option value="ACKNOWLEDGED">Atendidas</option>
+            <option value="RESOLVED">Resueltas</option>
+          </select>
         </div>
-        <Button variant="secondary" className="gap-2">
-          <Search className="h-4 w-4" /> Filtrar
+        <Button variant="secondary" className="gap-2" onClick={load}>
+          <RefreshCw className="h-4 w-4" />Actualizar
         </Button>
       </div>
 
-      <div className="grid lg:grid-cols-2 xl:grid-cols-3 gap-3">
-        {alerts.map((a) => (
-          <Card key={a.id}>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base">{a.type}</CardTitle>
-                <SeverityBadge level={a.severity} />
-              </div>
-              <CardDescription>
-                {a.id} · {a.time} · {a.location}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="text-sm space-y-2">
-              <div className="text-slate-500">{a.details}</div>
-              <div className="flex flex-wrap gap-1">
-                {a.modules.map((m) => (
-                  <Badge key={m} variant="outline" className="rounded-full">
-                    {m}
-                  </Badge>
-                ))}
-              </div>
-            </CardContent>
-            <CardFooter className="flex gap-2">
-              <Button size="sm" variant="outline" className="gap-2">
-                <CheckCircle2 className="h-4 w-4" /> Atender
-              </Button>
-              <Button size="sm" variant="outline" className="gap-2">
-                <Wand2 className="h-4 w-4" /> Generar reporte
-              </Button>
-            </CardFooter>
-          </Card>
-        ))}
-      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-slate-500 text-sm p-4">
+          <Loader2 className="h-4 w-4 animate-spin" />Cargando alertas…
+        </div>
+      ) : filteredAlerts.length === 0 ? (
+        <div className="text-slate-500 text-sm p-6 border rounded-xl text-center">
+          {alerts.length === 0 ? 'No hay alertas con ese filtro.' : 'No alerts match the current search.'}
+        </div>
+      ) : (
+        <div className="grid lg:grid-cols-2 xl:grid-cols-3 gap-3">
+          {filteredAlerts.map((a) => (
+            <Card key={a.id}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <StatusBadge status={a.status} />
+                  <CardDescription className="text-xs">
+                    <Clock className="h-3 w-3 inline mr-1" />
+                    {formatTime(a.created_at)}
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent className="text-sm text-slate-700">{a.message}</CardContent>
+              <CardFooter className="flex gap-2 flex-wrap">
+                {a.status === 'UNREAD' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={updating === a.id}
+                    onClick={() => updateStatus(a.id, 'ACKNOWLEDGED')}
+                    className="gap-2"
+                  >
+                    {updating === a.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4" />
+                    )}
+                    Atender
+                  </Button>
+                )}
+                {a.status === 'ACKNOWLEDGED' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={updating === a.id}
+                    onClick={() => updateStatus(a.id, 'RESOLVED')}
+                    className="gap-2"
+                  >
+                    {updating === a.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4" />
+                    )}
+                    Resolver
+                  </Button>
+                )}
+                {a.status === 'RESOLVED' && (
+                  <span className="text-xs text-slate-400 self-center">Resuelta ✓</span>
+                )}
+              </CardFooter>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function IncidentDetail() {
-  return (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <Card className="xl:col-span-2">
-        <CardHeader>
-          <CardTitle>Incidente · AL-01781</CardTitle>
-          <CardDescription>Pelea detectada – Patio central – 14:58</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="aspect-video rounded-xl bg-slate-200 grid place-items-center text-slate-500">
-            <PersonStanding className="h-10 w-10 opacity-70" />
-            <p className="text-sm">Clip recortado (8s) · Esqueleto superpuesto</p>
-          </div>
-          <div className="grid md:grid-cols-3 gap-3">
-            {['Empujón', 'Caída', 'Golpe'].map((t, i) => (
-              <div key={i} className="rounded-lg border p-2 text-xs">
-                <div className="font-medium">{t}</div>
-                <div className="text-slate-500">conf {80 - i * 7}%</div>
+function IncidentsList({ query = '' }: { query?: string }) {
+  const [incidents, setIncidents] = useState<ApiIncident[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState<ApiIncident | null>(null);
+  const [simulating, setSimulating] = useState<string | null>(null);
+  const [simError, setSimError] = useState('');
+  const [simSuccess, setSimSuccess] = useState('');
+  const [evidenceFiles, setEvidenceFiles] = useState<EvidenceFile[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState('');
+  const [evidenceUrl, setEvidenceUrl] = useState('');
+  const [selectedEvidenceName, setSelectedEvidenceName] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    setError('');
+    apiFetch<ApiIncident[]>('/incidents/?limit=30')
+      .then(setIncidents)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setEvidenceFiles([]);
+      setEvidenceUrl('');
+      setSelectedEvidenceName('');
+      setEvidenceError('');
+      return;
+    }
+
+    setEvidenceLoading(true);
+    setEvidenceError('');
+
+    apiFetch<EvidenceFile[]>(`/evidence/incident/${selected.id}`)
+      .then(async (files) => {
+        setEvidenceFiles(files);
+        if (!files.length) {
+          setEvidenceUrl('');
+          return;
+        }
+        const preferred =
+          files.find((file) => /\.(jpg|jpeg|png|webp|mp4|webm)$/i.test(file.object_name)) ?? files[0];
+        setSelectedEvidenceName(preferred.object_name);
+        const urlData = await apiFetch<{ url: string }>(
+          `/evidence/url?object_name=${encodeURIComponent(preferred.object_name)}`
+        );
+        setEvidenceUrl(urlData.url);
+      })
+      .catch((e) => setEvidenceError(e.message))
+      .finally(() => setEvidenceLoading(false));
+  }, [selected]);
+
+  const simulate = async (module: string) => {
+    setSimulating(module);
+    setSimError('');
+    setSimSuccess('');
+
+    const detections =
+      module === 'face'
+        ? [{ name: 'unknown_person', confidence: 0.85 }]
+        : module === 'weapons'
+        ? [{ class: 'knife', confidence: 0.91 }]
+        : [{ action: 'punch', confidence: 0.78 }];
+
+    try {
+      const result = await apiFetch<any>('/incidents/simulate', {
+        method: 'POST',
+        body: JSON.stringify({ module, camera_id: 'cam-demo-01', detections }),
+      });
+      setSimSuccess(`✓ Incidente creado — Regla: ${result.rule_triggered} · Prioridad: ${result.priority}`);
+      load();
+    } catch (e: any) {
+      setSimError(`Error al simular: ${e.message}`);
+    } finally {
+      setSimulating(null);
+    }
+  };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredIncidents = incidents.filter((incident) => {
+    const meta = incident.incident_metadata ?? {};
+    const haystack = [
+      meta.module,
+      meta.rule_triggered,
+      meta.priority,
+      meta.camera_id,
+      incident.id,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return !normalizedQuery || haystack.includes(normalizedQuery);
+  });
+
+  if (selected) {
+    const meta = selected.incident_metadata;
+    const isVideo = /\.(mp4|webm)$/i.test(selectedEvidenceName);
+    const isImage = /\.(jpg|jpeg|png|webp)$/i.test(selectedEvidenceName);
+
+    return (
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <Card className="xl:col-span-2">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Incidente</CardTitle>
+                <CardDescription>
+                  {meta.camera_id} · {formatTime(selected.created_at)}
+                </CardDescription>
               </div>
-            ))}
-          </div>
-        </CardContent>
-        <CardFooter className="flex gap-2">
-          <Button className="gap-2" variant="default">
-            <Bell className="h-4 w-4" /> Notificar a seguridad
-          </Button>
-          <Button className="gap-2" variant="outline">
-            <Database className="h-4 w-4" /> Guardar evidencia
-          </Button>
-        </CardFooter>
-      </Card>
+              <Button variant="ghost" onClick={() => setSelected(null)}>← Volver</Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {evidenceLoading ? (
+              <div className="aspect-video rounded-xl border bg-slate-50 grid place-items-center text-slate-500">
+                <div className="flex items-center gap-2 text-sm">
+                  <Loader2 className="h-4 w-4 animate-spin" />Loading evidence…
+                </div>
+              </div>
+            ) : evidenceError ? (
+              <div className="aspect-video rounded-xl border border-red-200 bg-red-50 grid place-items-center text-red-700 p-6 text-center">
+                <div className="space-y-2">
+                  <XCircle className="h-8 w-8 mx-auto" />
+                  <p className="font-medium">Evidence could not be loaded.</p>
+                  <p className="text-sm">{evidenceError}</p>
+                </div>
+              </div>
+            ) : evidenceUrl && isImage ? (
+              <div className="aspect-video rounded-xl border overflow-hidden bg-black">
+                <img src={evidenceUrl} alt="Incident evidence" className="h-full w-full object-contain" />
+              </div>
+            ) : evidenceUrl && isVideo ? (
+              <div className="aspect-video rounded-xl border overflow-hidden bg-black">
+                <video src={evidenceUrl} controls className="h-full w-full object-contain" />
+              </div>
+            ) : (
+              <div className="aspect-video rounded-xl border border-dashed bg-slate-50 grid place-items-center text-slate-500 p-6 text-center">
+                <div className="space-y-2">
+                  <Database className="h-8 w-8 mx-auto" />
+                  <p className="font-medium">No evidence file is available for this incident yet.</p>
+                  <p className="text-sm">
+                    The incident exists, but there is no saved MinIO evidence to render in this view.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid md:grid-cols-3 gap-3 text-xs">
+              {[['Módulo', meta.module], ['Regla', meta.rule_triggered], ['Prioridad', meta.priority]].map(([k, v]) => (
+                <div key={k} className="rounded-lg border p-2">
+                  <div className="font-medium">{k}</div>
+                  <div className="text-slate-500">{v ?? '–'}</div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+          <CardFooter className="flex gap-2">
+            <Button className="gap-2"><Bell className="h-4 w-4" />Notificar</Button>
+            <Button variant="outline" className="gap-2"><Database className="h-4 w-4" />Guardar evidencia</Button>
+          </CardFooter>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Metadatos</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="flex justify-between">
+              <span>Prioridad</span>
+              <SeverityBadge level={priorityToSeverity(meta.priority)} />
+            </div>
+            <div className="flex justify-between">
+              <span>Cámara</span>
+              <span>{meta.camera_id ?? '–'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>ID</span>
+              <span className="text-xs text-slate-400">{selected.id.slice(0, 8)}…</span>
+            </div>
+
+            <div>
+              <div className="font-medium mb-2">Evidence objects</div>
+              {evidenceFiles.length === 0 ? (
+                <div className="text-xs text-slate-500">No evidence objects listed.</div>
+              ) : (
+                <div className="space-y-2">
+                  {evidenceFiles.map((file) => (
+                    <div key={file.object_name} className="rounded-md border p-2 text-xs">
+                      <div className="font-medium break-all">{file.object_name}</div>
+                      <div className="text-slate-500">{Math.round((file.size ?? 0) / 1024)} KB</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Incidentes</h2>
+          <p className="text-sm text-slate-500">Eventos detectados por los módulos de IA</p>
+        </div>
+        <Button variant="outline" className="gap-2" onClick={load}>
+          <RefreshCw className="h-4 w-4" />Actualizar
+        </Button>
+      </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Resumen</CardTitle>
-          <CardDescription>Metadatos del evento</CardDescription>
+          <CardTitle className="text-base">Simular evento</CardTitle>
+          <CardDescription>Crea un incidente + alerta sin necesitar los módulos de IA activos</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span>Severidad</span>
-            <SeverityBadge level="critical" />
-          </div>
-          <div className="flex justify-between">
-            <span>Duración</span>
-            <span>00:08</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Personas</span>
-            <span>2</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Cámara</span>
-            <span>Patio-03</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Estado</span>
-            <span className="text-amber-700">En curso</span>
+        <CardContent className="space-y-3">
+          {simError && <ErrorBanner msg={simError} onClose={() => setSimError('')} />}
+          {simSuccess && <SuccessBanner msg={simSuccess} onClose={() => setSimSuccess('')} />}
+          <div className="flex gap-3 flex-wrap">
+            {([['face', 'Persona desconocida'], ['weapons', 'Arma'], ['pose', 'Agresión']] as [string, string][]).map(([m, label]) => (
+              <Button
+                key={m}
+                variant="outline"
+                size="sm"
+                disabled={simulating !== null}
+                onClick={() => simulate(m)}
+                className="gap-2"
+              >
+                {simulating === m ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+                {simulating === m ? 'Simulando…' : label}
+              </Button>
+            ))}
           </div>
         </CardContent>
-        <CardFooter className="flex gap-2">
-          <Button size="sm" variant="outline">
-            Asignar
-          </Button>
-          <Button size="sm" variant="outline">
-            Cerrar
-          </Button>
-        </CardFooter>
       </Card>
+
+      {error && <ErrorBanner msg={`Error cargando incidentes: ${error}`} onClose={() => setError('')} />}
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-slate-500 text-sm p-4">
+          <Loader2 className="h-4 w-4 animate-spin" />Cargando…
+        </div>
+      ) : filteredIncidents.length === 0 ? (
+        <div className="text-slate-500 text-sm p-6 border rounded-xl text-center">
+          {incidents.length === 0 ? 'No hay incidentes. Usa el simulador para crear uno.' : 'No incidents match the current search.'}
+        </div>
+      ) : (
+        <div className="grid lg:grid-cols-2 xl:grid-cols-3 gap-3">
+          {filteredIncidents.map((inc) => {
+            const meta = inc.incident_metadata;
+            return (
+              <Card key={inc.id} className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelected(inc)}>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">{meta.module?.toUpperCase() ?? 'EVENTO'}</CardTitle>
+                    <SeverityBadge level={priorityToSeverity(meta.priority)} />
+                  </div>
+                  <CardDescription className="text-xs flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {formatTime(inc.created_at)} · {meta.camera_id ?? '–'}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="text-xs text-slate-500">Regla: {meta.rule_triggered ?? '–'}</CardContent>
+                <CardFooter>
+                  <Button variant="ghost" size="sm" className="gap-1 text-xs">
+                    Ver detalle <ChevronRight className="h-3 w-3" />
+                  </Button>
+                </CardFooter>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-function Residents() {
+function Residents({ query = '' }: { query?: string }) {
+  const [persons, setPersons] = useState<ApiPerson[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const [createSuccess, setCreateSuccess] = useState('');
+  const [form, setForm] = useState({
+    full_name: '',
+    person_type: 'RESIDENT',
+    building: '',
+    apartment: '',
+    phone: '',
+    email: '',
+    valid_from: '',
+    valid_until: '',
+  });
+  const [enrollSlots, setEnrollSlots] = useState<(File | null)[]>([null, null, null]);
+  const [enrollTarget, setEnrollTarget] = useState<string | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollMsg, setEnrollMsg] = useState('');
+  const [enrollError, setEnrollError] = useState('');
+
+  const load = () => {
+    setLoadError('');
+    apiFetch<ApiPerson[]>('/persons/')
+      .then(setPersons)
+      .catch((e) => setLoadError(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const createPerson = async () => {
+    if (!form.full_name.trim()) return;
+
+    setCreating(true);
+    setCreateError('');
+    setCreateSuccess('');
+
+    try {
+      await apiFetch('/persons/', {
+        method: 'POST',
+        body: JSON.stringify({
+          full_name: form.full_name.trim(),
+          person_type: form.person_type,
+          building: form.building || null,
+          apartment: form.apartment || null,
+          phone: form.phone || null,
+          email: form.email || null,
+          valid_from: form.valid_from || null,
+          valid_until: form.valid_until || null,
+        }),
+      });
+
+      setCreateSuccess(`✓ "${form.full_name}" registered successfully`);
+      setForm({
+        full_name: '',
+        person_type: 'RESIDENT',
+        building: '',
+        apartment: '',
+        phone: '',
+        email: '',
+        valid_from: '',
+        valid_until: '',
+      });
+      load();
+    } catch (e: any) {
+      setCreateError(`Error al registrar: ${e.message}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const setSlotFile = (slotIndex: number, file: File | null) => {
+    setEnrollSlots((current) =>
+      current.map((currentFile, index) => (index === slotIndex ? file : currentFile))
+    );
+  };
+
+  const clearEnrollmentState = () => {
+    setEnrollTarget(null);
+    setEnrollSlots([null, null, null]);
+  };
+
+  const enrollBiometrics = async (personId: string) => {
+    const validFiles = enrollSlots.filter(Boolean) as File[];
+    if (validFiles.length !== 3) {
+      setEnrollError('Exactly 3 facial images are required to build the resident master vector.');
+      return;
+    }
+
+    setEnrolling(true);
+    setEnrollMsg('');
+    setEnrollError('');
+
+    const fd = new FormData();
+    validFiles.forEach((file) => fd.append('files', file));
+
+    try {
+      const res = await fetch(`/api/persons/${personId}/enroll`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+      setEnrollMsg(data.message ?? 'Enrolamiento exitoso');
+      load();
+    } catch (e: any) {
+      setEnrollError(`Error al enrolar: ${e.message}`);
+    } finally {
+      setEnrolling(false);
+      clearEnrollmentState();
+    }
+  };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredPersons = persons.filter((person) => {
+    const haystack = [
+      person.full_name,
+      person.person_type,
+      person.building,
+      person.apartment,
+      person.email,
+      person.phone,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return !normalizedQuery || haystack.includes(normalizedQuery);
+  });
+
+  const requiresLocation = form.person_type === 'RESIDENT' || form.person_type === 'VISITOR';
+  const isVisitor = form.person_type === 'VISITOR';
+  const stagedCount = enrollSlots.filter(Boolean).length;
+  const canFinalizeEnrollment = stagedCount === 3;
+
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Residentes</CardTitle>
-          <CardDescription>Enrolamiento y lista</CardDescription>
+          <CardTitle>People and biometric enrollment</CardTitle>
+          <CardDescription>
+            Residents require an exact 3-image staging workflow before enrollment.
+          </CardDescription>
         </CardHeader>
-        <CardContent className="grid md:grid-cols-2 gap-4">
+        <CardContent className="grid md:grid-cols-2 gap-6">
           <div className="space-y-3">
-            <Label>Buscar</Label>
-            <Input placeholder="Nombre, depto, ID" />
-            <div className="rounded-xl border p-3 bg-white">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">David Orozco</div>
-                  <div className="text-xs text-slate-500">Depto B-302 · 2 registros</div>
-                </div>
-                <Button size="sm" variant="outline">
-                  Ver
-                </Button>
+            <Label>Registered people</Label>
+            {loadError && <ErrorBanner msg={loadError} onClose={() => setLoadError('')} />}
+            {enrollMsg && <SuccessBanner msg={enrollMsg} onClose={() => setEnrollMsg('')} />}
+            {enrollError && <ErrorBanner msg={enrollError} onClose={() => setEnrollError('')} />}
+
+            {loading ? (
+              <div className="flex items-center gap-2 text-slate-500 text-sm">
+                <Loader2 className="h-4 w-4 animate-spin" />Cargando…
               </div>
-            </div>
-            <div className="rounded-xl border p-3 bg-white">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">Armando García</div>
-                  <div className="text-xs text-slate-500">Depto A-101 · 3 registros</div>
-                </div>
-                <Button size="sm" variant="outline">
-                  Ver
-                </Button>
+            ) : filteredPersons.length === 0 ? (
+              <div className="text-slate-500 text-sm border rounded-lg p-3">
+                {persons.length === 0 ? 'No hay personas registradas.' : 'No registered people match the current search.'}
               </div>
-            </div>
+            ) : (
+              <ScrollArea className="h-80">
+                <div className="space-y-2 pr-2">
+                  {filteredPersons.map((person) => (
+                    <div key={person.id} className="rounded-xl border p-3 bg-white">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-medium">{person.full_name}</div>
+                          <div className="text-xs text-slate-500">
+                            {person.person_type}
+                            {person.building ? ` · ${person.building}` : ''}
+                            {person.apartment ? ` / ${person.apartment}` : ''}
+                          </div>
+                          {(person.valid_from || person.valid_until) && (
+                            <div className="text-[11px] text-slate-400">
+                              {person.valid_from ? `from ${new Date(person.valid_from).toLocaleString('es-MX')}` : 'open start'}
+                              {' · '}
+                              {person.valid_until ? `until ${new Date(person.valid_until).toLocaleString('es-MX')}` : 'open end'}
+                            </div>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEnrollTarget(person.id);
+                            setEnrollSlots([null, null, null]);
+                            setEnrollMsg('');
+                            setEnrollError('');
+                          }}
+                        >
+                          Enroll
+                        </Button>
+                      </div>
+
+                      {enrollTarget === person.id && (
+                        <div className="mt-3 space-y-3 border-t pt-3">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs">Exact triple capture / staging buffer</Label>
+                            <Badge className="rounded-full bg-slate-100 text-slate-700">
+                              {stagedCount}/3 ready
+                            </Badge>
+                          </div>
+
+                          <div className="grid gap-3">
+                            {enrollSlots.map((file, slotIndex) => (
+                              <div key={slotIndex} className="rounded-lg border p-3 bg-slate-50">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <div className="font-medium text-sm">Slot {slotIndex + 1}</div>
+                                    <div className="text-xs text-slate-500">
+                                      {file ? file.name : 'No frame selected yet'}
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <label className="inline-flex">
+                                      <input
+                                        type="file"
+                                        accept="image/jpeg,image/png"
+                                        className="hidden"
+                                        onChange={(e) => setSlotFile(slotIndex, e.target.files?.[0] ?? null)}
+                                        onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
+                                      />
+                                      <span className="inline-flex items-center rounded-md border px-3 py-1 text-xs cursor-pointer bg-white hover:bg-slate-100">
+                                        {file ? 'Retake' : 'Capture'}
+                                      </span>
+                                    </label>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={!file}
+                                      onClick={() => setSlotFile(slotIndex, null)}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex gap-2 mt-1">
+                            <Button
+                              size="sm"
+                              disabled={enrolling || !canFinalizeEnrollment}
+                              onClick={() => enrollBiometrics(person.id)}
+                              className="gap-2"
+                            >
+                              {enrolling ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <UserPlus className="h-3 w-3" />
+                              )}
+                              {enrolling ? 'Processing…' : 'Finalize enrollment'}
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={clearEnrollmentState}>
+                              Cancel
+                            </Button>
+                          </div>
+
+                          {!canFinalizeEnrollment && (
+                            <div className="text-xs text-amber-700">
+                              Finalize remains disabled until exactly 3 valid images are staged.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
           </div>
 
           <div className="space-y-3">
-            <Label>Nuevo enrolamiento</Label>
-            <div className="aspect-video rounded-xl bg-slate-200 grid place-items-center text-slate-500">
-              <UserPlus className="h-8 w-8" />
-              <p className="text-xs">Coloque el rostro frente a la cámara</p>
+            <Label>Register new person</Label>
+            {createError && <ErrorBanner msg={createError} onClose={() => setCreateError('')} />}
+            {createSuccess && <SuccessBanner msg={createSuccess} onClose={() => setCreateSuccess('')} />}
+
+            <div>
+              <Label className="text-xs text-slate-500">Full name</Label>
+              <Input
+                placeholder="Ej: Ana García"
+                value={form.full_name}
+                onChange={(e) => setForm({ ...form, full_name: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && createPerson()}
+              />
             </div>
-            <Button className="w-full">Capturar rostro</Button>
-            <div className="grid grid-cols-2 gap-2">
-              <Input placeholder="Nombre" />
-              <Input placeholder="Departamento" />
+
+            <div>
+              <Label className="text-xs text-slate-500">Type</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm mt-1"
+                value={form.person_type}
+                onChange={(e) => setForm({ ...form, person_type: e.target.value })}
+              >
+                <option value="RESIDENT">Resident</option>
+                <option value="VISITOR">Visitor</option>
+                <option value="STAFF">Staff</option>
+              </select>
             </div>
+
+            {requiresLocation && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-slate-500">Building</Label>
+                  <Input
+                    value={form.building}
+                    onChange={(e) => setForm({ ...form, building: e.target.value })}
+                    placeholder="Tower A"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-500">Apartment</Label>
+                  <Input
+                    value={form.apartment}
+                    onChange={(e) => setForm({ ...form, apartment: e.target.value })}
+                    placeholder="301"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-slate-500">Phone</Label>
+                <Input
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  placeholder="+52..."
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-slate-500">Email</Label>
+                <Input
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  placeholder="person@example.com"
+                />
+              </div>
+            </div>
+
+            {isVisitor && (
+              <div className="grid grid-cols-1 gap-3">
+                <div>
+                  <Label className="text-xs text-slate-500">Valid from</Label>
+                  <Input
+                    type="datetime-local"
+                    value={form.valid_from}
+                    onChange={(e) => setForm({ ...form, valid_from: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-500">Valid until</Label>
+                  <Input
+                    type="datetime-local"
+                    value={form.valid_until}
+                    onChange={(e) => setForm({ ...form, valid_until: e.target.value })}
+                  />
+                </div>
+              </div>
+            )}
+
+            <Button
+              className="w-full gap-2"
+              disabled={creating || !form.full_name.trim()}
+              onClick={createPerson}
+            >
+              {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+              {creating ? 'Registrando…' : 'Register person'}
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -734,19 +1495,83 @@ function Residents() {
   );
 }
 
-function AccessGate() {
+function AccessGate({ onRegisterVisitor }: { onRegisterVisitor: () => void }) {
+  const [cameras, setCameras] = useState<ApiCamera[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      await ensureLocalWebcam();
+      const cameraData = await apiFetch<ApiCamera[]>('/cameras/?limit=20');
+      setCameras(cameraData);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    return () => {
+      fetch('/api/cameras/local-webcam/stop', { method: 'POST' }).catch(() => {});
+    };
+  }, [load]);
+
+  const activeLocalCamera = cameras.find(
+    (camera) => camera.ip_address === 'local://0' && camera.status === 'ACTIVE'
+  );
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <Card>
         <CardHeader>
           <CardTitle>Acceso – Torre A</CardTitle>
-          <CardDescription>Verificación facial en vivo</CardDescription>
+          <CardDescription>Verification view fed by backend-owned cameras</CardDescription>
         </CardHeader>
+
         <CardContent className="space-y-3">
-          <div className="aspect-video rounded-xl bg-slate-200 grid place-items-center text-slate-500">
-            <Camera className="h-8 w-8" />
-            <p className="text-xs">Frente de acceso</p>
-          </div>
+          {error && (
+            <ErrorBanner msg={`Error loading cameras: ${error}`} onClose={() => setError('')} />
+          )}
+
+          {loading ? (
+            <div className="aspect-video rounded-xl border bg-slate-50 grid place-items-center text-slate-500">
+              <div className="flex items-center gap-2 text-sm">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading access camera…
+              </div>
+            </div>
+          ) : activeLocalCamera ? (
+            <div className="aspect-video rounded-xl overflow-hidden border bg-black">
+              <img
+                src={localWebcamStreamUrl()}
+                alt="Backend-owned access stream"
+                className="h-full w-full object-contain"
+                onError={() =>
+                  setError(
+                    'Could not load backend webcam stream. Make sure no other app is locking the laptop camera.'
+                  )
+                }
+              />
+            </div>
+          ) : (
+            <div className="aspect-video rounded-xl border border-dashed bg-slate-50 text-slate-500 grid place-items-center p-6 text-center">
+              <div className="space-y-2">
+                <Camera className="h-8 w-8 mx-auto" />
+                <p className="font-medium">No access control camera is active.</p>
+                <p className="text-sm">
+                  The backend could not expose the local webcam yet. Once device 0 is available,
+                  the processed stream will render here.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-3 gap-2 text-xs">
             {['Iluminación', 'Enfoque', 'Alineación'].map((k, i) => (
               <div key={k} className="space-y-1">
@@ -759,43 +1584,35 @@ function AccessGate() {
             ))}
           </div>
         </CardContent>
+
         <CardFooter className="flex gap-2">
           <Button variant="default" className="gap-2">
-            <ShieldCheck className="h-4 w-4" /> Permitir
+            <ShieldCheck className="h-4 w-4" />
+            Permitir
           </Button>
           <Button variant="destructive" className="gap-2">
-            <CircleX className="h-4 w-4" /> Denegar
+            <CircleX className="h-4 w-4" />
+            Denegar
           </Button>
         </CardFooter>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Resultado</CardTitle>
-          <CardDescription>Comparación por similitud coseno</CardDescription>
+          <CardTitle>Result</CardTitle>
+          <CardDescription>Current access decision and fallback actions</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span>Nombre</span>
-            <span className="font-medium">—</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Similitud</span>
-            <span className="font-medium">0.41</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Umbral</span>
-            <span>0.52</span>
-          </div>
+          <div className="flex justify-between"><span>Nombre</span><span className="font-medium">—</span></div>
+          <div className="flex justify-between"><span>Similitud</span><span className="font-medium">0.41</span></div>
+          <div className="flex justify-between"><span>Umbral</span><span>0.52</span></div>
           <div className="flex justify-between">
             <span>Veredicto</span>
-            <Badge variant="outline" className="rounded-full">
-              Desconocido
-            </Badge>
+            <Badge variant="outline" className="rounded-full">Desconocido</Badge>
           </div>
         </CardContent>
         <CardFooter className="flex gap-2">
-          <Button variant="outline">Registrar visitante</Button>
+          <Button variant="outline" onClick={onRegisterVisitor}>Registrar visitante</Button>
           <Button variant="outline">Crear incidente</Button>
         </CardFooter>
       </Card>
@@ -876,6 +1693,156 @@ function SettingsPanel() {
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+export default function App() {
+  const [tab, setTab] = useState<'dashboard' | 'live' | 'alerts' | 'incidents' | 'residents' | 'access' | 'settings'>(() => {
+    const saved = window.localStorage.getItem('uh_security_active_tab');
+    return (saved as any) || 'dashboard';
+  });
+  const [searchQuery, setSearchQuery] = useState('');
+  const [alertCounts, setAlertCounts] = useState<AlertCounts>({ unread: 0, acknowledged: 0, resolved: 0 });
+  const [wsConnected, setWsConnected] = useState(false);
+
+  useEffect(() => {
+    window.localStorage.setItem('uh_security_active_tab', tab);
+  }, [tab]);
+
+  useEffect(() => {
+    let ws: WebSocket;
+    let reconnectTimeout: NodeJS.Timeout;
+    let isMounted = true; // Prevents memory leaks if you navigate away
+
+    const connect = () => {
+      if (!isMounted) return;
+      
+      ws = new WebSocket(buildWsUrl('/ws/alerts'));
+
+      ws.onopen = () => {
+        if (isMounted) setWsConnected(true);
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.event_type === 'ALERT_COUNT_UPDATE') {
+            setAlertCounts({
+              unread: msg.data.unread,
+              acknowledged: msg.data.acknowledged,
+              resolved: msg.data.resolved,
+            });
+          } else if (msg.event_type === 'NEW_ALERT' || msg.event_type === 'ALERT_STATUS_CHANGED') {
+            // The Architecture Fix: Manually trigger a count sync when raw events arrive.
+            // This safely updates global state, pushing the new data down to the Dashboard cleanly.
+            Promise.all([
+              apiFetch<{ count: number }>('/alerts/count?status=UNREAD'),
+              apiFetch<{ count: number }>('/alerts/count?status=ACKNOWLEDGED'),
+              apiFetch<{ count: number }>('/alerts/count?status=RESOLVED'),
+            ])
+              .then(([u, a, r]) => setAlertCounts({ unread: u.count, acknowledged: a.count, resolved: r.count }))
+              .catch(() => {});
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        if (isMounted) {
+          setWsConnected(false);
+          // The Auto-Reconnect Magic: Wait 3 seconds and try again
+          reconnectTimeout = setTimeout(connect, 3000);
+        }
+      };
+
+      ws.onerror = () => {
+        ws.close(); // Force a close event to trigger the retry loop
+      };
+    };
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    Promise.all([
+      apiFetch<{ count: number }>('/alerts/count?status=UNREAD'),
+      apiFetch<{ count: number }>('/alerts/count?status=ACKNOWLEDGED'),
+      apiFetch<{ count: number }>('/alerts/count?status=RESOLVED'),
+    ])
+      .then(([u, a, r]) => setAlertCounts({ unread: u.count, acknowledged: a.count, resolved: r.count }))
+      .catch(() => {});
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
+      <div className="max-w-7xl mx-auto p-4">
+        <Header
+          unreadCount={alertCounts.unread}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onOpenAlerts={() => setTab('alerts')}
+        />
+
+        <div className="flex items-center gap-2 mb-3 text-xs text-slate-500">
+          <div className={`h-2 w-2 rounded-full ${wsConnected ? 'bg-emerald-500' : 'bg-red-400'}`} />
+          {wsConnected ? 'Backend connected in real time' : 'No real-time backend connection available'}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
+          <div className="hidden lg:block">
+            <Card className="sticky top-4">
+              <CardHeader>
+                <CardTitle className="text-base">Navegación</CardTitle>
+                <CardDescription>Secciones del sistema</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <nav className="grid gap-1">
+                  {[
+                    { id: 'dashboard', icon: Gauge, label: 'Dashboard' },
+                    { id: 'live', icon: Camera, label: 'Monitoreo en vivo' },
+                    { id: 'alerts', icon: AlertTriangle, label: 'Alertas', badge: alertCounts.unread },
+                    { id: 'incidents', icon: ListChecks, label: 'Incidentes' },
+                    { id: 'residents', icon: Users, label: 'Residentes' },
+                    { id: 'access', icon: DoorOpen, label: 'Control de Acceso' },
+                    { id: 'settings', icon: Settings, label: 'Configuración' },
+                  ].map((it) => (
+                    <Button
+                      key={it.id}
+                      variant={tab === it.id ? 'secondary' : 'ghost'}
+                      className="justify-start gap-2 relative"
+                      onClick={() => setTab(it.id as any)}
+                    >
+                      <it.icon className="h-4 w-4" />
+                      {it.label}
+                      {it.badge && it.badge > 0 ? (
+                        <span className="ml-auto bg-red-500 text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">
+                          {it.badge > 9 ? '9+' : it.badge}
+                        </span>
+                      ) : null}
+                    </Button>
+                  ))}
+                </nav>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div>
+            {tab === 'dashboard' && <Dashboard alertCounts={alertCounts} />}
+            {tab === 'live' && <LiveMonitoring />}
+            {tab === 'alerts' && <Alerts query={searchQuery} />}
+            {tab === 'incidents' && <IncidentsList query={searchQuery} />}
+            {tab === 'residents' && <Residents query={searchQuery} />}
+            {tab === 'access' && <AccessGate onRegisterVisitor={() => setTab('residents')} />}
+            {tab === 'settings' && <SettingsPanel />}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
