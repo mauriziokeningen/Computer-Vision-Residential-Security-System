@@ -10,6 +10,7 @@ import logging
 import numpy as np
 import cv2
 from ultralytics import YOLO
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("WeaponInference")
@@ -19,7 +20,15 @@ PUBLISHER_PORT = "tcp://127.0.0.1:5556"
 MODULE_NAME = "weapons"
 CAMERA_ID = "main_camera"
 
-MODEL_WEIGHTS = "models_testing/Object Detection/best.pt"
+# Anchors to: TT/backend/src/modules/weapons/inference.py
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Go up 4 levels to the project root (TT)
+# weapons(0) -> modules(1) -> src(2) -> backend(3) -> TT(root)
+ROOT_DIR = SCRIPT_DIR.parents[3]
+
+# Combine for the final path
+MODEL_WEIGHTS = str(ROOT_DIR / "research" / "models" / "object_detection" / "weights" / "best.pt")
 CONFIDENCE_THRESHOLD = 0.50
 
 # Only report actual threats, skip the generic "object" class
