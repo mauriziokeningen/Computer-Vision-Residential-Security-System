@@ -19,7 +19,7 @@ PUBLISHER_PORT = "tcp://127.0.0.1:5556"
 MODULE_NAME = "weapons"
 CAMERA_ID = "main_camera"
 
-MODEL_WEIGHTS = "models_testing/Object Detection/best.pt"
+MODEL_WEIGHTS = "../../research/models/object_detection/weights/best.pt"
 CONFIDENCE_THRESHOLD = 0.50
 
 # Only report actual threats, skip the generic "object" class
