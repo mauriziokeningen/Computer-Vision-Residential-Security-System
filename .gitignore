@@ -42,8 +42,8 @@ last_commit_changes.txt
 # =======================================================
 
 # CRITICAL: Ignore all heavy datasets (Raw & Processed)
-/research/data/raw/
-/research/data/processed/
+/research/data/raw/*
+/research/data/processed/*
 
 # CRITICAL: Ignore local weights and massive experimental folders
 /research/models/*/weights/
@@ -81,3 +81,14 @@ last_commit_changes.txt
 .DS_Store
 Thumbs.db
 .vscode/
+
+
+# MLflow Tracking Databases & Artifacts
+*.db
+mlruns/
+artifacts/
+
+# CRITICAL: Preserve the directory structures for the Vault
+!/research/data/raw/.gitkeep
+!/research/data/processed/.gitkeep
+!/research/notebooks/.gitkeep
