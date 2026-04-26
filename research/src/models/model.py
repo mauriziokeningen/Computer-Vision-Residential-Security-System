@@ -4,7 +4,10 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from transformers import VideoMAEForVideoClassification, VideoMAEConfig
+<<<<<<< 58-featmlops-hardware-optimization-via-lora-parameter-efficient-tuning
 from peft import LoraConfig, get_peft_model
+=======
+>>>>>>> main
 
 # =============================================================================
 # [INFRASTRUCTURE] Enterprise Logging
@@ -15,15 +18,23 @@ class TT2ResidentialVideoMAE(nn.Module):
     """
     [ARCHITECTURE]
     SOTA Wrapper for VideoMAE v2, customized for Binary Threat Detection.
+<<<<<<< 58-featmlops-hardware-optimization-via-lora-parameter-efficient-tuning
     Now equipped with LoRA (Parameter-Efficient Fine-Tuning) to guarantee
     RTX 4090 VRAM compliance by keeping trainable parameters under 5%.
+=======
+    Encapsulates Hugging Face internals to provide a clean PyTorch nn.Module API.
+>>>>>>> main
     """
     def __init__(
         self, 
         model_name: str = "MCG-NJU/videomae-base", 
         num_classes: int = 2,
+<<<<<<< 58-featmlops-hardware-optimization-via-lora-parameter-efficient-tuning
         r: int = 16,
         alpha: int = 32
+=======
+        freeze_backbone: bool = False
+>>>>>>> main
     ) -> None:
         super().__init__()
         self.model_name = model_name
@@ -37,13 +48,19 @@ class TT2ResidentialVideoMAE(nn.Module):
             num_labels=self.num_classes
         )
         
+<<<<<<< 58-featmlops-hardware-optimization-via-lora-parameter-efficient-tuning
         # 2. Initialize base model (ignores the 400-class mismatch)
         self.base_model = VideoMAEForVideoClassification.from_pretrained(
+=======
+        # 2. Initialize model with the overridden head (ignores the 400-class mismatch)
+        self.backbone = VideoMAEForVideoClassification.from_pretrained(
+>>>>>>> main
             self.model_name,
             config=config,
             ignore_mismatched_sizes=True
         )
         
+<<<<<<< 58-featmlops-hardware-optimization-via-lora-parameter-efficient-tuning
         # 3. Configure LoRA Matrix Injections
         # Target the 'query' and 'value' projections in the attention mechanism
         peft_config = LoraConfig(
@@ -74,6 +91,13 @@ class TT2ResidentialVideoMAE(nn.Module):
         logger.info(f"Total Parameters:     {all_params:,d}")
         logger.info(f"VRAM Efficiency:      {efficiency:.2f}% active")
         logger.info("=" * 60)
+=======
+        # 3. Optional: Freeze backbone for Linear Probing / Transfer Learning
+        if freeze_backbone:
+            logger.info("Freezing VideoMAE backbone. Only the classification head will train.")
+            for param in self.backbone.videomae.parameters():
+                param.requires_grad = False
+>>>>>>> main
 
     def forward(
         self, 
@@ -91,9 +115,17 @@ class TT2ResidentialVideoMAE(nn.Module):
             # Shift from (B, C, T, H, W) to (B, T, C, H, W)
             pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
             
+<<<<<<< 58-featmlops-hardware-optimization-via-lora-parameter-efficient-tuning
         # Execute forward pass through the PEFT-wrapped model
         outputs = self.model(pixel_values=pixel_values, labels=labels)
         
+=======
+        # Execute forward pass
+        outputs = self.backbone(pixel_values=pixel_values, labels=labels)
+        
+        # In a custom nn.Module, it's best practice to return raw logits 
+        # and handle the loss function in the training loop/Lightning module.
+>>>>>>> main
         return outputs.logits
 
     @property
