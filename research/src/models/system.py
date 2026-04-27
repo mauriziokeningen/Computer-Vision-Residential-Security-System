@@ -1,100 +1,130 @@
 import logging
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import lightning.pytorch as pl
+import matplotlib.pyplot as plt
+import seaborn as sns
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from lightning.pytorch.loggers import MLFlowLogger
 
-# Import our SOTA, LoRA-optimized architecture
+# SOTA Metrics
+from torchmetrics.classification import (
+    BinaryAccuracy, 
+    BinaryPrecision, 
+    BinaryRecall, 
+    BinaryF1Score,
+    BinaryAveragePrecision,
+    BinaryConfusionMatrix
+)
+
 from src.models.model import TT2ResidentialVideoMAE
 
-# =============================================================================
-# [INFRASTRUCTURE] Enterprise Logging
-# =============================================================================
 logger = logging.getLogger(__name__)
 
 class TT2SecuritySystem(pl.LightningModule):
-    """
-    [ARCHITECTURE] PyTorch Lightning Engine for Residential Threat Detection.
-    Encapsulates the model, weighted loss functions, and SOTA optimization strategies.
-    Designed specifically to handle the TT2 Binary Imbalance problem.
-    """
     def __init__(
         self, 
         model_name: str = "MCG-NJU/videomae-base",
         learning_rate: float = 1e-4,
         weight_decay: float = 0.05,
-        threat_weight: float = 3.0, # Assigns 3x more mathematical importance to threats
+        threat_weight: float = 3.0, 
         epochs: int = 50
     ):
         super().__init__()
-        
-        # [TELEMETRY] Saves hyperparameters to the checkpoint and automatically streams to MLflow
         self.save_hyperparameters() 
         
-        # 1. Mount the LoRA-optimized Brain
         logger.info(f"Initializing TT2 Security System with backbone: {model_name}")
-        self.model = TT2ResidentialVideoMAE(
-            model_name=self.hparams.model_name, 
-            num_classes=2
-        )
+        self.model = TT2ResidentialVideoMAE(model_name=self.hparams.model_name, num_classes=2)
         
-        # 2. Define the Loss Function (Addressing the Class Imbalance)
-        # Security is imbalanced. Class 0: Decoy (Weight 1.0), Class 1: Threat (Weight 3.0)
-        # This prevents the network from achieving high accuracy by just guessing "Decoy" every time.
-        class_weights = torch.tensor([1.0, self.hparams.threat_weight])
-        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
+        # [CRITICAL FIX: Device Synchronization]
+        # register_buffer ensures this tensor moves to the RTX 4090 automatically
+        self.register_buffer(
+            "class_weights", 
+            torch.tensor([1.0, self.hparams.threat_weight], dtype=torch.float32)
+        )
+
+        # =====================================================================
+        # [SOTA TELEMETRY] The Audit Suite
+        # =====================================================================
+        self.train_acc = BinaryAccuracy()
+        self.val_acc = BinaryAccuracy()
+        self.val_precision = BinaryPrecision()
+        self.val_recall = BinaryRecall()
+        self.val_f1 = BinaryF1Score()
+        
+        # [L5 Metrics] Threshold-independent evaluation
+        self.val_pr_auc = BinaryAveragePrecision()
+        self.val_conf_matrix = BinaryConfusionMatrix()
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """The forward pass is cleanly delegated to our LoRA wrapper."""
         return self.model(pixel_values)
 
     def training_step(self, batch, batch_idx):
         videos, labels = batch
         logits = self(videos)
         
-        loss = self.criterion(logits, labels)
+        # [CRITICAL FIX] Apply device-aware weights dynamically
+        loss = F.cross_entropy(logits, labels, weight=self.class_weights)
         
-        # Calculate accuracy for SOTA telemetry
         preds = torch.argmax(logits, dim=1)
-        acc = (preds == labels).float().mean()
+        self.train_acc(preds, labels)
         
-        # self.log automatically hooks into our MLFlow logger
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        
+        self.log("train/acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         videos, labels = batch
         logits = self(videos)
+        loss = F.cross_entropy(logits, labels, weight=self.class_weights)
         
-        loss = self.criterion(logits, labels)
+        probs = torch.softmax(logits, dim=1)[:, 1] 
         preds = torch.argmax(logits, dim=1)
-        acc = (preds == labels).float().mean()
         
-        # sync_dist=True guarantees accurate logging across multi-GPU environments
+        self.val_acc(preds, labels)
+        self.val_precision(preds, labels)
+        self.val_recall(preds, labels)
+        self.val_f1(preds, labels)
+        self.val_pr_auc(probs, labels)
+        self.val_conf_matrix(preds, labels)
+        
         self.log("val/loss", loss, prog_bar=True, sync_dist=True)
-        self.log("val/acc", acc, prog_bar=True, sync_dist=True)
+        self.log("val/acc", self.val_acc, prog_bar=True, sync_dist=True)
+        self.log("val/recall", self.val_recall, prog_bar=True, sync_dist=True)
+        self.log("val/precision", self.val_precision, prog_bar=False, sync_dist=True)
+        self.log("val/f1", self.val_f1, prog_bar=False, sync_dist=True)
+        self.log("val/pr_auc", self.val_pr_auc, prog_bar=False, sync_dist=True)
         
         return loss
 
+    def on_validation_epoch_end(self):
+        """Generates and logs a Confusion Matrix image."""
+        cm = self.val_conf_matrix.compute().cpu().numpy()
+        
+        fig, ax = plt.subplots(figsize=(6, 5))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax, 
+                    xticklabels=["Decoy", "Threat"], 
+                    yticklabels=["Decoy", "Threat"])
+        plt.ylabel('Actual')
+        plt.xlabel('Predicted')
+        plt.title(f'Confusion Matrix - Epoch {self.current_epoch}')
+        
+        # [CRITICAL FIX: SOLID Principle / Defensive Programming]
+        # Ensure we only call MLflow-specific methods if the logger is actually MLflow
+        if self.logger and isinstance(self.logger, MLFlowLogger):
+            mlflow_logger = self.logger.experiment
+            run_id = self.logger.run_id
+            mlflow_logger.log_figure(run_id, fig, f"confusion_matrices/epoch_{self.current_epoch}.png")
+            
+        plt.close(fig) 
+        self.val_conf_matrix.reset() 
+
     def configure_optimizers(self):
-        """
-        [SOTA] AdamW + Cosine Annealing is the industry standard for Vision Transformers.
-        """
-        # [CRITICAL HARDWARE OPTIMIZATION]
-        # We explicitly filter out the frozen backbone weights. If we pass the whole model
-        # to AdamW, it allocates memory for all 86M parameters, defeating the purpose of LoRA.
-        trainable_params = filter(lambda p: p.requires_grad, self.model.parameters())
+        # [CRITICAL FIX: Memory Safety] Cast generator to list
+        trainable_params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
         
-        optimizer = AdamW(
-            trainable_params, 
-            lr=self.hparams.learning_rate, 
-            weight_decay=self.hparams.weight_decay
-        )
-        
-        # Smoothly decrease the learning rate to settle into local minima
+        optimizer = AdamW(trainable_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
         scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.epochs) 
-        
         return [optimizer], [scheduler]

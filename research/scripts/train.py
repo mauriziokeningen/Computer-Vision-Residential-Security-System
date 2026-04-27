@@ -53,7 +53,8 @@ def main():
     logger.info("Connecting to MLflow Tracking Server...")
     mlflow_logger = MLFlowLogger(
         experiment_name="TT2_Pilot_Run",
-        tracking_uri="file:./mlruns" # Logs locally to a folder called 'mlruns'
+        # [SOTA FIX] Upgraded from local files to a relational database
+        tracking_uri="sqlite:///mlflow.db"
     )
 
     # 6. SOTA Automated Guardrails
