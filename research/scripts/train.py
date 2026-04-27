@@ -2,10 +2,23 @@ import os
 import logging
 from pathlib import Path
 import torch
+import git
+import mlflow
 from torch.utils.data import DataLoader, random_split
 import lightning.pytorch as pl
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+
+# [SOTA TELEMETRY] Import the advanced hardware and learning rate monitors
+from lightning.pytorch.callbacks import (
+    ModelCheckpoint,
+    EarlyStopping,
+    RichProgressBar,
+    DeviceStatsMonitor,
+    LearningRateMonitor
+)
+
 from lightning.pytorch.loggers import MLFlowLogger
+
+import subprocess
 
 # Import our architectural components
 # Adjust the import paths if your directory structure differs slightly
@@ -17,6 +30,25 @@ from src.models.system import TT2SecuritySystem
 # =============================================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger("TT2_Master_Controller")
+
+def get_git_hash():
+    """[SOTA TELEMETRY] Data Provenance: Fetches the current commit hash."""
+    try:
+        repo = git.Repo(search_parent_directories=True)
+        return repo.head.object.hexsha
+    except Exception:
+        return "unknown_hash"
+
+def get_dvc_status():
+    """[SOTA TELEMETRY] Data Provenance: Audits DVC to ensure data isn't secretly mutating."""
+    try:
+        # Runs 'dvc status -q'. If data is modified but uncommitted, it returns text.
+        result = subprocess.run(["dvc", "status", "-q"], capture_output=True, text=True)
+        if result.returncode == 0 and not result.stdout.strip():
+            return "clean"
+        return "DIRTY_UNCOMMITTED_DATA"
+    except FileNotFoundError:
+        return "dvc_cli_not_found"
 
 def main():
     # 1. Hardware Verification
@@ -51,11 +83,18 @@ def main():
 
     # 5. Initialize SOTA Telemetry (MLflow)
     logger.info("Connecting to MLflow Tracking Server...")
+    
+    # [SOTA TELEMETRY] Hardware Monitoring (Power, vRAM, Temperature)
+    mlflow.enable_system_metrics_logging()
+
     mlflow_logger = MLFlowLogger(
         experiment_name="TT2_Pilot_Run",
         # [SOTA FIX] Upgraded from local files to a relational database
         tracking_uri="sqlite:///mlflow.db"
     )
+
+    # [SOTA TELEMETRY] Log Data Provenance (Git Hash) so we can reproduce this exact run
+    mlflow_logger.log_hyperparams({"git_commit_hash": get_git_hash()})
 
     # 6. SOTA Automated Guardrails
     checkpoint_callback = ModelCheckpoint(
@@ -72,6 +111,10 @@ def main():
         mode="min"
     )
 
+    # [SOTA TELEMETRY] Initialize Pulse Monitors
+    device_monitor = DeviceStatsMonitor()
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+
     # =========================================================================
     # 7. THE PILOT RUN CONFIGURATION
     # =========================================================================
@@ -84,8 +127,14 @@ def main():
         limit_train_batches=0.05,     # <--- 5% PILOT CONSTRAINT
         limit_val_batches=0.05,       # <--- 5% PILOT CONSTRAINT
         logger=mlflow_logger,
-        callbacks=[checkpoint_callback, early_stop_callback],
-        log_every_n_steps=1           # Force logging often since we only have 5% of data
+        callbacks=[
+            checkpoint_callback, 
+            early_stop_callback,
+            RichProgressBar(),
+            device_monitor, 
+            lr_monitor
+        ],
+        log_every_n_steps=1          # Force logging often since we only have 5% of data
     )
 
     # 8. Engage!
