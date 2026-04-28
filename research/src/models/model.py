@@ -4,6 +4,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from transformers import VideoMAEForVideoClassification, VideoMAEConfig
+from peft import LoraConfig, get_peft_model
 
 # =============================================================================
 # [INFRASTRUCTURE] Enterprise Logging
@@ -14,13 +15,15 @@ class TT2ResidentialVideoMAE(nn.Module):
     """
     [ARCHITECTURE]
     SOTA Wrapper for VideoMAE v2, customized for Binary Threat Detection.
-    Encapsulates Hugging Face internals to provide a clean PyTorch nn.Module API.
+    Now equipped with LoRA (Parameter-Efficient Fine-Tuning) to guarantee
+    RTX 4090 VRAM compliance by keeping trainable parameters under 5%.
     """
     def __init__(
         self, 
         model_name: str = "MCG-NJU/videomae-base", 
         num_classes: int = 2,
-        freeze_backbone: bool = False
+        r: int = 16,
+        alpha: int = 32
     ) -> None:
         super().__init__()
         self.model_name = model_name
@@ -34,18 +37,43 @@ class TT2ResidentialVideoMAE(nn.Module):
             num_labels=self.num_classes
         )
         
-        # 2. Initialize model with the overridden head (ignores the 400-class mismatch)
-        self.backbone = VideoMAEForVideoClassification.from_pretrained(
+        # 2. Initialize base model (ignores the 400-class mismatch)
+        self.base_model = VideoMAEForVideoClassification.from_pretrained(
             self.model_name,
             config=config,
             ignore_mismatched_sizes=True
         )
         
-        # 3. Optional: Freeze backbone for Linear Probing / Transfer Learning
-        if freeze_backbone:
-            logger.info("Freezing VideoMAE backbone. Only the classification head will train.")
-            for param in self.backbone.videomae.parameters():
-                param.requires_grad = False
+        # 3. Configure LoRA Matrix Injections
+        # Target the 'query' and 'value' projections in the attention mechanism
+        peft_config = LoraConfig(
+            task_type="SEQ_CLS", 
+            r=r, 
+            lora_alpha=alpha, 
+            target_modules=["query", "value"], 
+            lora_dropout=0.1,
+            modules_to_save=["classifier"] # CRITICAL: Keep our new binary head trainable
+        )
+
+        # 4. Wrap the architecture with PEFT
+        logger.info(f"Injecting LoRA Adapters (Rank={r}, Alpha={alpha})...")
+        self.model = get_peft_model(self.base_model, peft_config)
+        
+        # 5. Hardware Audit
+        self._print_trainable_parameters()
+
+    def _print_trainable_parameters(self) -> None:
+        """Calculates and logs the percentage of active weights."""
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        all_params = sum(p.numel() for p in self.model.parameters())
+        efficiency = 100 * trainable_params / all_params
+        
+        logger.info("=" * 60)
+        logger.info("PEFT HARDWARE AUDIT")
+        logger.info(f"Trainable Parameters: {trainable_params:,d}")
+        logger.info(f"Total Parameters:     {all_params:,d}")
+        logger.info(f"VRAM Efficiency:      {efficiency:.2f}% active")
+        logger.info("=" * 60)
 
     def forward(
         self, 
@@ -63,11 +91,9 @@ class TT2ResidentialVideoMAE(nn.Module):
             # Shift from (B, C, T, H, W) to (B, T, C, H, W)
             pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
             
-        # Execute forward pass
-        outputs = self.backbone(pixel_values=pixel_values, labels=labels)
+        # Execute forward pass through the PEFT-wrapped model
+        outputs = self.model(pixel_values=pixel_values, labels=labels)
         
-        # In a custom nn.Module, it's best practice to return raw logits 
-        # and handle the loss function in the training loop/Lightning module.
         return outputs.logits
 
     @property
