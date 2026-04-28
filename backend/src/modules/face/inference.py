@@ -3,6 +3,13 @@ Biometric Inference Worker Service.
 
 This module acts as an isolated microservice within the distributed IPC architecture, 
 responsible for real-time facial detection, embedding extraction, and identity verification.
+It publishes detection metadata to:
+    - The orchestrator (PUSH, port 5556) for rule evaluation.
+    - The annotator (PUB, port 5558) for visual rendering.
+
+Frame data is no longer carried on either output; the orchestrator obtains the
+annotated frame from its own SUB buffer when persisting evidence, ensuring that
+live view and stored evidence display the exact same pixels.
 
 Architectural Decisions & Trade-offs:
 * Hardware Isolation: Consumes frames via ZeroMQ SUB sockets instead of interacting 
@@ -12,14 +19,13 @@ Architectural Decisions & Trade-offs:
   searches. We explicitly rejected in-memory vector indices (like FAISS) to prevent 
   state synchronization issues across distributed worker nodes, trading a negligible 
   latency increase for strict ACID compliance.
-* Payload Contract Parity: Enforces a strict data contract with the downstream 
-  Orchestrator by providing a compressed Base64 image payload upon detection, guaranteeing 
-  MinIO evidence persistence.
+* No frame muxing in the worker: drawing was historically tempting to do here, but
+  it would create two divergent visual paths (live view vs evidence). The annotator
+  is now the single source of visual truth.
 """
 import cv2
 import zmq
 import time
-import base64
 import numpy as np
 import logging
 from typing import List, Dict, Any, Tuple
@@ -32,8 +38,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("FaceInference")
 
 # --- System Integration Constants ---
-SUBSCRIBER_PORT = "tcp://127.0.0.1:5555"
-PUBLISHER_PORT = "tcp://127.0.0.1:5556"
+VIDEO_SUB_PORT = "tcp://127.0.0.1:5555"
+ORCHESTRATOR_PUSH_PORT = "tcp://127.0.0.1:5556"
+ANNOTATOR_PUB_PORT = "tcp://127.0.0.1:5558"
 MODULE_NAME = "face"
 CAMERA_ID = "main_camera"
 
@@ -45,36 +52,16 @@ MAX_ALLOWED_DISTANCE = 0.40
 
 
 def _decode_frame(frame_bytes: bytes) -> np.ndarray:
-    """
-    Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix.
-
-    Args:
-        frame_bytes (bytes): The raw byte array transmitted over ZeroMQ.
-
-    Returns:
-        np.ndarray: A multi-dimensional array representing the image frame.
-    """
+    """Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix."""
     frame_np = np.frombuffer(frame_bytes, dtype=np.uint8)
     return cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
 
 
 def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
-    """
-    Executes a high-speed nearest-neighbor search against the PostgreSQL vector index.
-
-    Args:
-        embedding (np.ndarray): The 512-dimensional L2-normalized face vector.
-
-    Returns:
-        Tuple[str, float]: The database identifier (name) and the calculated cosine distance.
-                           Returns "unknown_person" if the distance exceeds the security threshold.
-    """
+    """Executes a high-speed nearest-neighbor search against the PostgreSQL vector index."""
     db = SessionLocal()
     try:
         vector_list = embedding.tolist()
-        
-        # Native SQL utilizing the pgvector <=> operator forces the database engine 
-        # to execute the nearest-neighbor calculation, keeping the Python worker stateless.
         query = text("""
             SELECT full_name, (face_embedding <=> :vector) AS distance
             FROM persons
@@ -82,51 +69,37 @@ def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
             ORDER BY distance ASC
             LIMIT 1;
         """)
-        
         result = db.execute(query, {"vector": str(vector_list)}).fetchone()
-        
         if result:
             name, distance = result
-            
-            # Strict security gate enforcement
             if distance <= MAX_ALLOWED_DISTANCE:
                 return name, float(distance)
             return "unknown_person", float(distance)
-            
         return "unknown_person", 1.0
-            
     except Exception as e:
         logger.error(f"Database vector search failed: {e}")
         return "unknown_person", 1.0
     finally:
-        # CRITICAL: Connection pool exhaustion will occur if this lock is not released.
         db.close()
 
 
 def start_face_model() -> None:
-    """
-    Initializes the AI process, establishes IPC pipelines, and enters the infinite polling loop.
-    
-    Constraints:
-        Designed as an isolated multiprocess target. Do not call this synchronously 
-        within an ASGI event loop.
-    """
+    """Initializes the AI process, establishes IPC pipelines, and enters the polling loop."""
     context = zmq.Context()
     
-    # Establish read-only ingestion pipeline
     video_receiver = context.socket(zmq.SUB)
-    video_receiver.connect(SUBSCRIBER_PORT)
+    video_receiver.connect(VIDEO_SUB_PORT)
     video_receiver.setsockopt_string(zmq.SUBSCRIBE, "")
     video_receiver.setsockopt(zmq.CONFLATE, 1)
 
-    # Establish write-only orchestration pipeline
     result_sender = context.socket(zmq.PUSH)
-    result_sender.connect(PUBLISHER_PORT)
+    result_sender.connect(ORCHESTRATOR_PUSH_PORT)
+
+    annotator_publisher = context.socket(zmq.PUB)
+    annotator_publisher.connect(ANNOTATOR_PUB_PORT)
 
     logger.info("Initializing FaceProcessorService (InsightFace)...")
     try:
-        # Instantiating the AI service dynamically claims VRAM. 
-        # Failure here indicates hardware resource exhaustion or missing CUDA libraries.
         ai_service = FaceProcessorService()
         logger.info("Face module loaded into VRAM. Listening for video stream...")
     except Exception as e:
@@ -139,7 +112,6 @@ def start_face_model() -> None:
             frame = _decode_frame(frame_bytes)
             detections_payload = []
 
-            # Execute unified detection and alignment forward pass
             faces = ai_service.app.get(frame)
 
             for face in faces:
@@ -148,7 +120,6 @@ def start_face_model() -> None:
                 w, h = x2 - x, y2 - y
                 
                 live_embedding = face.normed_embedding
-
                 name, distance = _find_closest_match_in_db(live_embedding)
 
                 detections_payload.append({
@@ -157,27 +128,26 @@ def start_face_model() -> None:
                     "bbox": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
                 })
 
-            if detections_payload:
-                # System Design Constraint: Memory Management
-                # Raw BGR matrices at 720p consume ~2.7MB. Encoding this directly to Base64 
-                # saturates the ZeroMQ IPC bus and triggers OOM crashes in the Orchestrator. 
-                # We aggressively compress to JPEG (Quality 75) first, reducing the payload to ~40KB.
-                success, jpeg_buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                
-                frame_b64 = ""
-                if success:
-                    frame_b64 = base64.b64encode(jpeg_buffer.tobytes()).decode('utf-8')
+            # Always publish to the annotator (even empty), so that bboxes age out
+            # cleanly via the TTL buffer when faces leave the scene.
+            annotator_publisher.send_json({
+                "camera_id": CAMERA_ID,
+                "module": MODULE_NAME,
+                "detections": detections_payload,
+            })
 
-                # Fulfils the strict JSON data contract expected by the Orchestrator for MinIO persistence.
+            if detections_payload:
+                # Frame data is intentionally absent: the orchestrator's annotated
+                # frame buffer (subscribed to the annotator) provides the evidence
+                # image, guaranteeing visual parity with the live feed.
                 payload = {
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "camera_id": CAMERA_ID,
                     "module": MODULE_NAME,
-                    "frame_data": frame_b64, 
                     "detections": detections_payload
                 }
                 result_sender.send_json(payload)
 
         except Exception as e:
-            # Catching generic exceptions prevents a single bad frame matrix from killing the entire worker.
             logger.debug(f"Inference cycle error: {e}")
+

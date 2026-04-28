@@ -7,6 +7,7 @@ and executes side-effects (DB writes, S3 uploads, WebSocket alerts).
 import zmq
 import time
 import logging
+import threading
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -17,6 +18,55 @@ logger = logging.getLogger("RuleEngine")
 # ASSUMPTION: Upstream AI workers MUST connect via zmq.PUSH. 
 # This orchestrator uses zmq.PULL to act as a load-balanced sink.
 RECEIVER_PORT = "tcp://127.0.0.1:5556"
+
+# Annotated frame stream (from the annotator process). The orchestrator
+# subscribes here in a background thread to keep the latest annotated frame
+# buffered in memory. When an incident triggers and we need to persist
+# evidence, we pull from this buffer instead of from the worker's event,
+# guaranteeing the persisted JPEG is byte-identical to what the operator
+# was watching live a moment earlier.
+ANNOTATED_SUB_PORT = "tcp://127.0.0.1:5557"
+
+# Thread-safe holder for the most recent annotated JPEG bytes received from
+# the annotator. CONFLATE on the SUB socket ensures we only ever hold the
+# latest frame, so the buffer is O(1) memory and never lags.
+_latest_annotated_frame: Optional[bytes] = None
+_annotated_frame_lock = threading.Lock()
+
+
+def _annotated_frame_listener() -> None:
+    """
+    Background daemon thread.
+    Subscribes to the annotator's output (port 5557) with CONFLATE=1 and
+    keeps the latest annotated JPEG buffered for evidence persistence.
+
+    Lives in the orchestrator process (rather than as a separate process)
+    because the consumer of this buffer — _save_evidence — runs in the same
+    event loop. Threading is sufficient: the GIL doesn't block I/O-bound
+    socket reads, and there's no CPU contention with the rule engine.
+    """
+    global _latest_annotated_frame
+    ctx = zmq.Context.instance()
+    sub = ctx.socket(zmq.SUB)
+    sub.connect(ANNOTATED_SUB_PORT)
+    sub.setsockopt_string(zmq.SUBSCRIBE, "")
+    sub.setsockopt(zmq.CONFLATE, 1)
+    logger.info(f"Annotated frame listener online ({ANNOTATED_SUB_PORT})")
+
+    while True:
+        try:
+            frame_bytes = sub.recv()
+            with _annotated_frame_lock:
+                _latest_annotated_frame = frame_bytes
+        except Exception as e:
+            logger.error(f"Annotated frame listener crashed: {e}")
+            break
+
+
+def _get_latest_annotated_frame() -> Optional[bytes]:
+    """Returns a snapshot of the latest annotated JPEG, or None if not ready yet."""
+    with _annotated_frame_lock:
+        return _latest_annotated_frame
 
 PRIORITY_LOW = "LOW"
 PRIORITY_MEDIUM = "MEDIUM"
@@ -108,21 +158,37 @@ def _create_alert(db, incident_id, message: str) -> Any:
         return alert
 
 def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optional[str]:
-    if not frame_data:
+    """
+    Persists the latest annotated frame (from the annotator's output stream)
+    as evidence for the given incident.
+
+    The `frame_data` parameter is kept in the signature for backwards
+    compatibility but is no longer used: workers stopped sending frame bytes
+    to the orchestrator since the rendering moved to the annotator. Evidence
+    is sourced from the in-process buffer fed by `_annotated_frame_listener`.
+
+    If the annotator hasn't produced a frame yet (e.g. cold start, or the
+    annotator process is down), this returns None and skips persistence
+    rather than uploading a raw, unannotated frame — visual consistency
+    between live view and evidence is the explicit guarantee of this
+    architecture.
+    """
+    frame_bytes = _get_latest_annotated_frame()
+    if frame_bytes is None:
+        logger.warning(
+            f"No annotated frame available for incident {incident_id}; "
+            "skipping evidence upload (annotator may still be warming up)."
+        )
         return None
+
     try:
         from src.utils.s3_client import upload_incident_clip
-
-        # If frame_data is base64 string, decode it to bytes
-        if isinstance(frame_data, str):
-            import base64
-            frame_data = base64.b64decode(frame_data)
 
         # TECH DEBT: Synchronous network I/O.
         # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades,
         # the IPC bus will back up. V2 must offload this to a Celery background worker.
         object_name = upload_incident_clip(
-            file_data=frame_data,
+            file_data=frame_bytes,
             incident_id=str(incident_id),
             camera_id=camera_id,
             filename=f"frame_{datetime.utcnow().strftime('%H%M%S')}.jpg",
@@ -278,6 +344,16 @@ class EventAccumulator:
         self.last_reset = time.time()
 
 def start_orchestrator() -> None:
+    # Spawn the annotated-frame listener in a daemon thread BEFORE binding the
+    # rule socket. This way the buffer is already populating by the time the
+    # first detection event arrives, minimizing the cold-start window where
+    # _save_evidence would have nothing to persist.
+    threading.Thread(
+        target=_annotated_frame_listener,
+        name="AnnotatedFrameListener",
+        daemon=True,
+    ).start()
+
     context = zmq.Context()
     receiver = context.socket(zmq.PULL)
     receiver.bind(RECEIVER_PORT)

@@ -57,9 +57,15 @@ class LocalCameraStreamService:
                 return
             self._running = True
 
+        # Subscribe to the annotated stream (port 5557) instead of the raw
+        # ingestion stream. The annotator process draws bounding boxes,
+        # labels, and confidences on top of the raw frames; consuming from
+        # 5557 means the live MJPEG feed shown to the operator already has
+        # the visual overlay baked in. When no detections are active, the
+        # annotator passes the raw JPEG through unchanged.
         self._socket = self._context.socket(zmq.SUB)
-        self._socket.connect("tcp://127.0.0.1:5555")
-        
+        self._socket.connect("tcp://127.0.0.1:5557")
+
         # An empty subscription filter assumes total consumption of the target port.
         self._socket.setsockopt_string(zmq.SUBSCRIBE, "")
         self._socket.setsockopt(zmq.CONFLATE, 1) 
