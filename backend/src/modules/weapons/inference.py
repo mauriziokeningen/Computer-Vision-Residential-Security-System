@@ -17,6 +17,7 @@ Model loading strategy:
     the Neural Engine. If the .mlpackage is missing the worker silently
     falls back to .pt, so the system always boots regardless of export state.
 """
+import os
 import zmq
 import time
 import logging
@@ -42,6 +43,11 @@ PYTORCH_WEIGHTS = WEIGHTS_DIR / "best2.pt"
 
 CONFIDENCE_THRESHOLD = 0.50
 THREAT_CLASSES = {"knife", "pistol"}
+
+# --- DEBUG ----------------------------------------------------------------
+DEBUG_FRAME_DIR = "/tmp/weapon_debug"
+os.makedirs(DEBUG_FRAME_DIR, exist_ok=True)
+# --------------------------------------------------------------------------
 
 
 def _resolve_model_path() -> tuple[str, str]:
@@ -97,7 +103,7 @@ def start_weapon_model() -> None:
     logger.info("Running warmup inference...")
     dummy = np.zeros((640, 640, 3), dtype=np.uint8)
     model(dummy, verbose=False)
-    logger.info("Weapon model ready. Listening for video stream...")
+    logger.info(f"Weapon model ready. DEBUG frames -> {DEBUG_FRAME_DIR}")
 
     last_idle_log = 0.0
 

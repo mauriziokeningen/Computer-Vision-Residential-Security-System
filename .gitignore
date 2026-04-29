@@ -13,6 +13,7 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .mypy_cache/
+.python-version
 
 # Virtual Environments (General/Local)
 venv/
@@ -68,6 +69,12 @@ last_commit_changes.txt
 # Ignore auto-generated research plots and evaluation images
 /research/models/**/*.png
 
+# Root level training artifacts
+checkpoints/
+outputs/
+lightning_logs/
+
+
 # =======================================================
 # 4. LEGACY ARCHIVES
 # =======================================================
@@ -85,6 +92,9 @@ Thumbs.db
 
 # MLflow Tracking Databases & Artifacts
 *.db
+mlruns/
+artifacts/
+mlflow.db*
 mlruns/
 artifacts/
 
