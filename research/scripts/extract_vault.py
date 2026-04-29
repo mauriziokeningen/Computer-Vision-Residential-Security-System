@@ -15,7 +15,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("TT2_Extraction_Service")
 
 # 2. The Residential MVP Taxonomy
 THREAT_VECTORS = {
@@ -72,6 +72,10 @@ def extract_surgical_subset(zip_path: Path, output_dir: Path):
 
                 # 4. The Surgical Filter
                 if any(action_class in filename for action_class in MVP_CLASSES):
+                    # [IDEMPOTENCY] Skip if file already exists to avoid redundant I/O
+                    if (output_dir / filename).exists():
+                        continue
+
                     # Flatten extraction (forces files into the root of output_dir)
                     file_info.filename = filename 
                     archive.extract(file_info, path=output_dir)
@@ -86,9 +90,11 @@ def extract_surgical_subset(zip_path: Path, output_dir: Path):
 
     logger.info("="*50)
     logger.info("EXTRACTION PIPELINE COMPLETE")
-    logger.info(f"Total Extracted: {extracted_count} target files")
+    logger.info(f"Total Extracted from {zip_path.name}: {extracted_count} target files")
     logger.info(f"Total Skipped:   {skipped_count} noise files")
     logger.info("="*50)
+    
+    return extracted_count # Return count so batch mode can sum it up
 
 
 if __name__ == "__main__":
@@ -97,23 +103,46 @@ if __name__ == "__main__":
     
     # Resolves paths dynamically relative to where the script is executed
     project_root = Path.cwd()
-    default_zip = project_root / "data" / "raw" / "body"/ "NTU_RGB_D"/ "nturgbd_rgb_s001.zip"
-    default_out = project_root / "data" / "raw" / "body"/ "NTU_RGB_D"
+    data_vault = project_root / "data" / "raw" / "body"/ "NTU_RGB_D"
 
     parser.add_argument(
         "--zip-path", 
         type=Path, 
-        default=default_zip,
-        help="Path to the downloaded .zip file."
+        default=None, # Setting to None triggers Batch Mode automatically
+        help="Path to a specific .zip file (Optional, defaults to Batch Mode)."
     )
     parser.add_argument(
         "--output-dir", 
         type=Path, 
-        default=default_out,
+        default=data_vault,
         help="Directory where extracted .avi files will be saved."
     )
 
     args = parser.parse_args()
 
-    # Execute Pipeline
-    extract_surgical_subset(args.zip_path, args.output_dir)
+    # ---------------------------------------------------------
+    # 6. EXECUTION PIPELINE (Single vs. Batch)
+    # ---------------------------------------------------------
+    total_files_extracted = 0
+
+    if args.zip_path:
+        # Single Target Mode (Manual Override)
+        total_files_extracted = extract_surgical_subset(args.zip_path, args.output_dir)
+    else:
+        # [SOTA UPGRADE] Find all ZIP files in the vault and batch process
+        logger.info("Scanning vault for ZIP payloads...")
+        all_zips = sorted(list(data_vault.glob("*.zip")))
+
+        if not all_zips:
+            logger.error(f"No ZIP payloads found in {data_vault}")
+            exit(1)
+
+        logger.info(f"IGNITING BATCH EXTRACTION: {len(all_zips)} Payloads Detected")
+        for zip_file in all_zips:
+            count = extract_surgical_subset(zip_file, args.output_dir)
+            total_files_extracted += count
+            
+        logger.info("="*60)
+        logger.info("ALL PAYLOADS PROCESSED")
+        logger.info(f"Total MVP Assets Extracted: {total_files_extracted}")
+        logger.info("="*60)
