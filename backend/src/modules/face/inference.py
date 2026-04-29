@@ -52,16 +52,35 @@ MAX_ALLOWED_DISTANCE = 0.40
 
 
 def _decode_frame(frame_bytes: bytes) -> np.ndarray:
-    """Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix."""
+    """
+    Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix.
+
+    Args:
+        frame_bytes (bytes): The raw byte array transmitted over ZeroMQ.
+
+    Returns:
+        np.ndarray: A multi-dimensional array representing the image frame.
+    """
     frame_np = np.frombuffer(frame_bytes, dtype=np.uint8)
     return cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
 
 
 def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
-    """Executes a high-speed nearest-neighbor search against the PostgreSQL vector index."""
+    """
+    Executes a high-speed nearest-neighbor search against the PostgreSQL vector index.
+
+    Args:
+        embedding (np.ndarray): The 512-dimensional L2-normalized face vector.
+
+    Returns:
+        Tuple[str, float]: The database identifier (name) and the calculated cosine distance.
+                           Returns "unknown_person" if the distance exceeds the security threshold.
+    """
     db = SessionLocal()
     try:
         vector_list = embedding.tolist()
+          # Native SQL utilizing the pgvector <=> operator forces the database engine 
+        # to execute the nearest-neighbor calculation, keeping the Python worker stateless.
         query = text("""
             SELECT full_name, (face_embedding <=> :vector) AS distance
             FROM persons
@@ -72,6 +91,7 @@ def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
         result = db.execute(query, {"vector": str(vector_list)}).fetchone()
         if result:
             name, distance = result
+            # Strict security gate enforcement
             if distance <= MAX_ALLOWED_DISTANCE:
                 return name, float(distance)
             return "unknown_person", float(distance)
@@ -80,18 +100,26 @@ def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
         logger.error(f"Database vector search failed: {e}")
         return "unknown_person", 1.0
     finally:
+        # CRITICAL: Connection pool exhaustion will occur if this lock is not released.
         db.close()
 
 
 def start_face_model() -> None:
-    """Initializes the AI process, establishes IPC pipelines, and enters the polling loop."""
-    context = zmq.Context()
+    """
+    Initializes the AI process, establishes IPC pipelines, and enters the infinite polling loop.
     
+    Constraints:
+        Designed as an isolated multiprocess target. Do not call this synchronously 
+        within an ASGI event loop.
+    """
+    context = zmq.Context()
+    # Establish read-only ingestion pipeline
     video_receiver = context.socket(zmq.SUB)
     video_receiver.connect(VIDEO_SUB_PORT)
     video_receiver.setsockopt_string(zmq.SUBSCRIBE, "")
     video_receiver.setsockopt(zmq.CONFLATE, 1)
 
+   # Establish write-only orchestration pipeline
     result_sender = context.socket(zmq.PUSH)
     result_sender.connect(ORCHESTRATOR_PUSH_PORT)
 
@@ -100,6 +128,9 @@ def start_face_model() -> None:
 
     logger.info("Initializing FaceProcessorService (InsightFace)...")
     try:
+        # Instantiating the AI service dynamically claims VRAM. 
+        # Failure here indicates hardware resource exhaustion or missing CUDA libraries.
+
         ai_service = FaceProcessorService()
         logger.info("Face module loaded into VRAM. Listening for video stream...")
     except Exception as e:
@@ -149,5 +180,6 @@ def start_face_model() -> None:
                 result_sender.send_json(payload)
 
         except Exception as e:
+            # Catching generic exceptions prevents a single bad frame matrix from killing the entire worker.
             logger.debug(f"Inference cycle error: {e}")
 
