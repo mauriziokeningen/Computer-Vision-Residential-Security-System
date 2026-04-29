@@ -52,13 +52,30 @@ MAX_ALLOWED_DISTANCE = 0.40
 
 
 def _decode_frame(frame_bytes: bytes) -> np.ndarray:
-    """Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix."""
+    """
+    Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix.
+
+    Args:
+        frame_bytes (bytes): The raw byte array transmitted over ZeroMQ.
+
+    Returns:
+        np.ndarray: A multi-dimensional array representing the image frame.
+    """
     frame_np = np.frombuffer(frame_bytes, dtype=np.uint8)
     return cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
 
 
 def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
-    """Executes a high-speed nearest-neighbor search against the PostgreSQL vector index."""
+    """
+    Executes a high-speed nearest-neighbor search against the PostgreSQL vector index.
+
+    Args:
+        embedding (np.ndarray): The 512-dimensional L2-normalized face vector.
+
+    Returns:
+        Tuple[str, float]: The database identifier (name) and the calculated cosine distance.
+                           Returns "unknown_person" if the distance exceeds the security threshold.
+    """
     db = SessionLocal()
     try:
         vector_list = embedding.tolist()
@@ -87,7 +104,13 @@ def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
 
 
 def start_face_model() -> None:
-    """Initializes the AI process, establishes IPC pipelines, and enters the polling loop."""
+    """
+    Initializes the AI process, establishes IPC pipelines, and enters the infinite polling loop.
+    
+    Constraints:
+        Designed as an isolated multiprocess target. Do not call this synchronously 
+        within an ASGI event loop.
+    """
     context = zmq.Context()
     # Establish read-only ingestion pipeline
     video_receiver = context.socket(zmq.SUB)
