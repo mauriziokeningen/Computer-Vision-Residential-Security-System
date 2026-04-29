@@ -11,6 +11,7 @@ from src.ingestion.stream import start_ingestion
 from src.modules.face.inference import start_face_model
 from src.modules.weapons.inference import start_weapon_model
 from src.orchestrator.rules import start_orchestrator
+from src.annotator.process import start_annotator
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SystemMain")
@@ -19,11 +20,22 @@ def main() -> None:
     """Initializes and manages the concurrent processes for the security system."""
     logger.info("Starting TT2 Security System (Face + Weapon Detection Mode)...")
 
+    # Process startup order matters:
+    #   1. Orchestrator: binds the PULL socket on 5556 (rule events) and starts
+    #      the annotated-frame listener thread that subscribes to 5557.
+    #   2. Annotator: binds the PUB socket on 5557 and subscribes to 5555/5558.
+    #      Must come before the workers so its 5558 SUB is ready when workers
+    #      start publishing.
+    #   3. Workers (face, weapons): connect to 5555 (raw frames), PUSH to 5556,
+    #      PUB to 5558.
+    #   4. Ingestion: starts publishing on 5555 last, so all subscribers are
+    #      already attached.
     processes = [
         multiprocessing.Process(target=start_orchestrator, name="Orchestrator_Process"),
-        multiprocessing.Process(target=start_face_model, name="Face_Process"),
+        multiprocessing.Process(target=start_annotator,    name="Annotator_Process"),
+        multiprocessing.Process(target=start_face_model,   name="Face_Process"),
         multiprocessing.Process(target=start_weapon_model, name="Weapon_Process"),
-        multiprocessing.Process(target=start_ingestion, name="Ingestion_Process")
+        multiprocessing.Process(target=start_ingestion,    name="Ingestion_Process"),
     ]
 
     try:
