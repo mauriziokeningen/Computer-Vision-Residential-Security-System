@@ -24,6 +24,7 @@ Architectural decisions:
       as-is without re-encoding. Saves one decode + one encode per frame in the
       common case.
 """
+import os
 import zmq
 import time
 import logging
@@ -37,20 +38,23 @@ from src.utils.draw import draw_module_detections
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Annotator")
 
-INGEST_SUB_PORT = "tcp://127.0.0.1:5555"       # raw frames from stream.py
-DETECTIONS_SUB_PORT = "tcp://127.0.0.1:5558"   # detection metadata from workers
-ANNOTATED_PUB_PORT = "tcp://127.0.0.1:5557"    # annotated frames out
+# Endpoints sourced from the environment with the current localhost
+# topology as defaults. Keeps a multi-host or containerized deployment
+# configurable without code changes.
+INGEST_SUB_PORT = os.getenv("VIDEO_SUB_PORT", "tcp://127.0.0.1:5555")            # raw frames from stream.py
+DETECTIONS_SUB_PORT = os.getenv("ANNOTATOR_PUB_PORT", "tcp://127.0.0.1:5558")    # detection metadata from workers
+ANNOTATED_PUB_PORT = os.getenv("ANNOTATED_PUB_PORT", "tcp://127.0.0.1:5557")     # annotated frames out
 
 # How long a detection stays drawn on the frame after the last time it was reported.
 # At ~20 FPS inference on weapons + ~30 FPS on face, 0.5s comfortably covers the
 # next inference cycle from the slowest module. Tuned downward will cause flicker;
 # tuned upward will leave stale boxes lingering when objects exit the scene.
-DEFAULT_DETECTION_TTL_SECONDS = 0.5
+DEFAULT_DETECTION_TTL_SECONDS = float(os.getenv("ANNOTATOR_TTL_SECONDS", "0.5"))
 
 # JPEG quality for the republished annotated frame. Matches the workers' previous
 # evidence quality (75) so that the live feed and stored evidence are visually
 # indistinguishable.
-JPEG_QUALITY = 75
+JPEG_QUALITY = int(os.getenv("ANNOTATOR_JPEG_QUALITY", "75"))
 
 
 @dataclass

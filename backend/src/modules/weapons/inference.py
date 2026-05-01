@@ -16,24 +16,36 @@ Model loading strategy:
     lower inference latency on M-series chips by routing convolutions to
     the Neural Engine. If the .mlpackage is missing the worker silently
     falls back to .pt, so the system always boots regardless of export state.
+
+    Platform gating: CoreML is only attempted when the host is actually
+    macOS on Apple Silicon. On Linux/Windows or Intel Macs the worker
+    falls back to PyTorch even if a `.mlpackage` happens to exist on
+    disk — loading an Apple-only artifact on a non-Apple host raises a
+    fatal error inside the model loader, so platform detection is a
+    hard gate.
 """
 import os
+import platform
 import zmq
 import time
 import logging
 import numpy as np
 import cv2
+from typing import Optional, Tuple
 from ultralytics import YOLO
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("WeaponInference")
 
-VIDEO_SUB_PORT = "tcp://127.0.0.1:5555"
-ORCHESTRATOR_PUSH_PORT = "tcp://127.0.0.1:5556"
-ANNOTATOR_PUB_PORT = "tcp://127.0.0.1:5558"
+# Network endpoints. Sourced from the environment so deployment topology
+# (containers, multi-host, multi-camera) can change without code edits.
+# Defaults preserve the original developer-machine layout.
+VIDEO_SUB_PORT = os.getenv("VIDEO_SUB_PORT", "tcp://127.0.0.1:5555")
+ORCHESTRATOR_PUSH_PORT = os.getenv("ORCHESTRATOR_PUSH_PORT", "tcp://127.0.0.1:5556")
+ANNOTATOR_PUB_PORT = os.getenv("ANNOTATOR_PUB_PORT", "tcp://127.0.0.1:5558")
 MODULE_NAME = "weapons"
-CAMERA_ID = "main_camera"
+CAMERA_ID = os.getenv("CAMERA_ID", "main_camera")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parents[3]
@@ -41,25 +53,40 @@ WEIGHTS_DIR = ROOT_DIR / "research" / "models" / "object_detection" / "weights"
 COREML_WEIGHTS = WEIGHTS_DIR / "best2.mlpackage"
 PYTORCH_WEIGHTS = WEIGHTS_DIR / "best2.pt"
 
-CONFIDENCE_THRESHOLD = 0.50
+CONFIDENCE_THRESHOLD = float(os.getenv("WEAPON_CONFIDENCE_THRESHOLD", "0.50"))
 THREAT_CLASSES = {"knife", "pistol"}
 
-# --- DEBUG ----------------------------------------------------------------
-DEBUG_FRAME_DIR = "/tmp/weapon_debug"
-os.makedirs(DEBUG_FRAME_DIR, exist_ok=True)
-# --------------------------------------------------------------------------
+
+def _is_apple_silicon() -> bool:
+    """
+    Returns True only on macOS running on an arm64 chip (M1/M2/M3/M4...).
+
+    Used as a hard gate before attempting to load a CoreML `.mlpackage`.
+    Loading an Apple-only artifact on Linux or Intel raises an opaque
+    error from inside coremltools / Ultralytics, which we'd rather
+    avoid by detecting the unsupported host upfront.
+    """
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
-def _resolve_model_path() -> tuple[str, str]:
+def _resolve_model_path() -> Tuple[str, str]:
     """
     Returns (path_to_load, backend_label_for_logs).
 
-    CoreML export wins when present. The backend label is logged on startup
-    so it's obvious from stdout which path is in use after a deploy or a
-    fresh checkout.
+    CoreML export wins when present AND the host is Apple Silicon. The
+    backend label is logged on startup so it's obvious from stdout
+    which path is in use after a deploy or a fresh checkout.
     """
-    if COREML_WEIGHTS.exists():
+    if COREML_WEIGHTS.exists() and _is_apple_silicon():
         return str(COREML_WEIGHTS), "CoreML (Apple Silicon accelerated)"
+
+    if COREML_WEIGHTS.exists() and not _is_apple_silicon():
+        logger.info(
+            "CoreML weights present but host is not Apple Silicon "
+            f"(system={platform.system()}, machine={platform.machine()}); "
+            "falling back to PyTorch."
+        )
+
     if PYTORCH_WEIGHTS.exists():
         return str(PYTORCH_WEIGHTS), "PyTorch (CPU)"
     raise FileNotFoundError(
@@ -67,7 +94,14 @@ def _resolve_model_path() -> tuple[str, str]:
     )
 
 
-def _decode_frame(frame_bytes: bytes) -> np.ndarray:
+def _decode_frame(frame_bytes: bytes) -> Optional[np.ndarray]:
+    """
+    Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix.
+
+    Returns None if the bytes are corrupt or unreadable, allowing the
+    caller to skip the frame instead of letting a downstream cv2/YOLO
+    call raise on a malformed buffer.
+    """
     frame_np = np.frombuffer(frame_bytes, dtype=np.uint8)
     return cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
 
@@ -103,14 +137,27 @@ def start_weapon_model() -> None:
     logger.info("Running warmup inference...")
     dummy = np.zeros((640, 640, 3), dtype=np.uint8)
     model(dummy, verbose=False)
-    logger.info(f"Weapon model ready. DEBUG frames -> {DEBUG_FRAME_DIR}")
+    logger.info("Weapon model ready. Listening for video stream...")
 
     last_idle_log = 0.0
+    # Aggregated counter for decode failures so we surface persistent
+    # corruption without flooding logs on a single bad packet.
+    decode_failures = 0
 
     while True:
         try:
             frame_bytes = video_receiver.recv()
             frame = _decode_frame(frame_bytes)
+            if frame is None:
+                decode_failures += 1
+                # Log every 30th failure to flag persistent issues without
+                # spamming the journal on transient single-frame corruption.
+                if decode_failures % 30 == 1:
+                    logger.warning(
+                        f"Frame decode returned None ({decode_failures} total); "
+                        "skipping inference for this frame."
+                    )
+                continue
 
             t0 = time.time()
             results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
