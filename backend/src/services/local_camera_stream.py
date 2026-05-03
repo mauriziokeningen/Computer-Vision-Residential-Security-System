@@ -1,7 +1,14 @@
+import os
 import zmq
 import time
 import threading
 from typing import Optional
+
+
+# Annotated stream endpoint. Defaults to localhost:5557 to preserve the
+# original developer-machine layout. Override with ANNOTATED_PUB_PORT
+# env var when deploying with a different topology.
+ANNOTATED_STREAM_ENDPOINT = os.getenv("ANNOTATED_PUB_PORT", "tcp://127.0.0.1:5557")
 
 
 class LocalCameraStreamService:
@@ -64,7 +71,7 @@ class LocalCameraStreamService:
         # the visual overlay baked in. When no detections are active, the
         # annotator passes the raw JPEG through unchanged.
         self._socket = self._context.socket(zmq.SUB)
-        self._socket.connect("tcp://127.0.0.1:5557")
+        self._socket.connect(ANNOTATED_STREAM_ENDPOINT)
 
         # An empty subscription filter assumes total consumption of the target port.
         self._socket.setsockopt_string(zmq.SUBSCRIBE, "")
@@ -156,3 +163,4 @@ class LocalCameraStreamService:
 
 
 local_camera_stream_service = LocalCameraStreamService()
+
