@@ -4,6 +4,7 @@ Acts as the central Sink Node in the IPC architecture. Consumes stateless events
 from AI workers via ZeroMQ (PULL), applies temporal state (debouncing), 
 and executes side-effects (DB writes, S3 uploads, WebSocket alerts).
 """
+import os
 import zmq
 import time
 import logging
@@ -17,7 +18,11 @@ logger = logging.getLogger("RuleEngine")
 # --- Boundary Contract ---
 # ASSUMPTION: Upstream AI workers MUST connect via zmq.PUSH. 
 # This orchestrator uses zmq.PULL to act as a load-balanced sink.
-RECEIVER_PORT = "tcp://127.0.0.1:5556"
+#
+# Endpoints are configurable via environment variables so deployment topology
+# (single-host dev, containerized, multi-host) can change without code edits.
+# Defaults preserve the original developer-machine layout.
+RECEIVER_PORT = os.getenv("ORCHESTRATOR_PUSH_PORT", "tcp://127.0.0.1:5556")
 
 # Annotated frame stream (from the annotator process). The orchestrator
 # subscribes here in a background thread to keep the latest annotated frame
@@ -25,48 +30,76 @@ RECEIVER_PORT = "tcp://127.0.0.1:5556"
 # evidence, we pull from this buffer instead of from the worker's event,
 # guaranteeing the persisted JPEG is byte-identical to what the operator
 # was watching live a moment earlier.
-ANNOTATED_SUB_PORT = "tcp://127.0.0.1:5557"
+ANNOTATED_SUB_PORT = os.getenv("ANNOTATED_PUB_PORT", "tcp://127.0.0.1:5557")
 
-# Thread-safe holder for the most recent annotated JPEG bytes received from
-# the annotator. CONFLATE on the SUB socket ensures we only ever hold the
-# latest frame, so the buffer is O(1) memory and never lags.
-_latest_annotated_frame: Optional[bytes] = None
-_annotated_frame_lock = threading.Lock()
+# Compound-event temporal window (seconds). Different AI models process at
+# different latencies; this is how long we wait to correlate cross-module
+# events before evaluating compound rules.
+COMPOUND_EVENT_WINDOW_SECONDS = float(os.getenv("COMPOUND_EVENT_WINDOW_SECONDS", "2.0"))
+
+# Internal API endpoint for alert broadcasting. Kept env-driven so the
+# orchestrator and the FastAPI host can be deployed on different machines.
+ALERT_API_URL = os.getenv("ALERT_API_URL", "http://127.0.0.1:8000/api/alerts/")
+ALERT_API_TIMEOUT_SECONDS = float(os.getenv("ALERT_API_TIMEOUT_SECONDS", "2.0"))
 
 
-def _annotated_frame_listener() -> None:
+class AnnotatedFrameBuffer:
     """
-    Background daemon thread.
-    Subscribes to the annotator's output (port 5557) with CONFLATE=1 and
-    keeps the latest annotated JPEG buffered for evidence persistence.
+    Thread-safe holder for the most recent annotated JPEG bytes received from
+    the annotator process.
+
+    Encapsulates what was previously module-level mutable state
+    (`_latest_annotated_frame` + `_annotated_frame_lock`) into a single
+    object whose lifetime is bound to the orchestrator instance. The
+    daemon-thread consumer drains the SUB socket (with CONFLATE=1, so we
+    only ever hold the latest frame) and writes into the buffer under the
+    lock. Readers obtain a snapshot via `get_latest()` with no I/O on the
+    call path, so evidence persistence never blocks waiting on the socket.
 
     Lives in the orchestrator process (rather than as a separate process)
     because the consumer of this buffer — _save_evidence — runs in the same
     event loop. Threading is sufficient: the GIL doesn't block I/O-bound
     socket reads, and there's no CPU contention with the rule engine.
     """
-    global _latest_annotated_frame
-    ctx = zmq.Context.instance()
-    sub = ctx.socket(zmq.SUB)
-    sub.connect(ANNOTATED_SUB_PORT)
-    sub.setsockopt_string(zmq.SUBSCRIBE, "")
-    sub.setsockopt(zmq.CONFLATE, 1)
-    logger.info(f"Annotated frame listener online ({ANNOTATED_SUB_PORT})")
 
-    while True:
-        try:
-            frame_bytes = sub.recv()
-            with _annotated_frame_lock:
-                _latest_annotated_frame = frame_bytes
-        except Exception as e:
-            logger.error(f"Annotated frame listener crashed: {e}")
-            break
+    def __init__(self, endpoint: str):
+        self._endpoint = endpoint
+        self._lock = threading.Lock()
+        self._frame: Optional[bytes] = None
+        self._ctx = zmq.Context.instance()
+        self._sock = self._ctx.socket(zmq.SUB)
+        self._sock.connect(self._endpoint)
+        self._sock.setsockopt_string(zmq.SUBSCRIBE, "")
+        self._sock.setsockopt(zmq.CONFLATE, 1)
+
+        threading.Thread(
+            target=self._consume,
+            name="AnnotatedFrameListener",
+            daemon=True,
+        ).start()
+        logger.info(f"Annotated frame listener online ({self._endpoint})")
+
+    def _consume(self) -> None:
+        while True:
+            try:
+                frame_bytes = self._sock.recv()
+                with self._lock:
+                    self._frame = frame_bytes
+            except Exception as e:
+                logger.error(f"Annotated frame listener crashed: {e}")
+                break
+
+    def get_latest(self) -> Optional[bytes]:
+        """Returns a snapshot of the latest annotated JPEG, or None if not ready yet."""
+        with self._lock:
+            return self._frame
 
 
-def _get_latest_annotated_frame() -> Optional[bytes]:
-    """Returns a snapshot of the latest annotated JPEG, or None if not ready yet."""
-    with _annotated_frame_lock:
-        return _latest_annotated_frame
+# Module-level singleton, populated when start_orchestrator() runs. Kept as a
+# module attribute (not a true global mutable) so the helper functions
+# (_save_evidence, etc.) can access it without threading every signature.
+_frame_buffer: Optional[AnnotatedFrameBuffer] = None
+
 
 PRIORITY_LOW = "LOW"
 PRIORITY_MEDIUM = "MEDIUM"
@@ -126,27 +159,26 @@ def _create_incident(db, event: Dict[str, Any], rule_triggered: str, priority: s
 def _create_alert(db, incident_id, message: str) -> Any:
     import urllib.request
     import json
-    
+
     # THE BRIDGE: Instead of writing to the DB in silence, Brain 2 hits Brain 1's API.
     # This forces FastAPI to execute the database insert AND broadcast the WebSocket message.
-    url = "http://127.0.0.1:8000/api/alerts/"
     payload = {
         "incident_id": str(incident_id) if incident_id else None,
         "message": message
     }
     headers = {"Content-Type": "application/json"}
-    
+
     try:
         req = urllib.request.Request(
-            url, 
-            data=json.dumps(payload).encode('utf-8'), 
-            headers=headers, 
+            ALERT_API_URL,
+            data=json.dumps(payload).encode('utf-8'),
+            headers=headers,
             method='POST'
         )
-        with urllib.request.urlopen(req, timeout=2.0) as response:
+        with urllib.request.urlopen(req, timeout=ALERT_API_TIMEOUT_SECONDS) as response:
             logger.debug(f"Alert pushed to API successfully: {message}")
             return json.loads(response.read().decode())
-            
+
     except Exception as e:
         logger.error(f"Failed to push alert to API, falling back to direct DB write: {e}")
         # Fallback just in case FastAPI is rebooting
@@ -165,7 +197,7 @@ def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optiona
     The `frame_data` parameter is kept in the signature for backwards
     compatibility but is no longer used: workers stopped sending frame bytes
     to the orchestrator since the rendering moved to the annotator. Evidence
-    is sourced from the in-process buffer fed by `_annotated_frame_listener`.
+    is sourced from the in-process buffer fed by AnnotatedFrameBuffer.
 
     If the annotator hasn't produced a frame yet (e.g. cold start, or the
     annotator process is down), this returns None and skips persistence
@@ -173,7 +205,14 @@ def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optiona
     between live view and evidence is the explicit guarantee of this
     architecture.
     """
-    frame_bytes = _get_latest_annotated_frame()
+    if _frame_buffer is None:
+        logger.warning(
+            f"AnnotatedFrameBuffer not initialized when persisting incident "
+            f"{incident_id}; evidence will not be saved."
+        )
+        return None
+
+    frame_bytes = _frame_buffer.get_latest()
     if frame_bytes is None:
         logger.warning(
             f"No annotated frame available for incident {incident_id}; "
@@ -344,22 +383,20 @@ class EventAccumulator:
         self.last_reset = time.time()
 
 def start_orchestrator() -> None:
-    # Spawn the annotated-frame listener in a daemon thread BEFORE binding the
-    # rule socket. This way the buffer is already populating by the time the
-    # first detection event arrives, minimizing the cold-start window where
-    # _save_evidence would have nothing to persist.
-    threading.Thread(
-        target=_annotated_frame_listener,
-        name="AnnotatedFrameListener",
-        daemon=True,
-    ).start()
+    # Initialize the AnnotatedFrameBuffer BEFORE binding the rule socket. This
+    # way the buffer is already populating by the time the first detection
+    # event arrives, minimizing the cold-start window where _save_evidence
+    # would have nothing to persist. The buffer is exposed via a module-level
+    # name so the helper functions can reach it without signature changes.
+    global _frame_buffer
+    _frame_buffer = AnnotatedFrameBuffer(ANNOTATED_SUB_PORT)
 
     context = zmq.Context()
     receiver = context.socket(zmq.PULL)
     receiver.bind(RECEIVER_PORT)
 
     logger.info(f"Rule engine started. Waiting for events on {RECEIVER_PORT}")
-    accumulator = EventAccumulator(window_seconds=2.0)
+    accumulator = EventAccumulator(window_seconds=COMPOUND_EVENT_WINDOW_SECONDS)
 
     while True:
         try:
@@ -394,3 +431,4 @@ def start_orchestrator() -> None:
 
         except Exception as e:
             logger.error(f"Error processing event: {e}")
+

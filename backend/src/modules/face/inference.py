@@ -23,12 +23,13 @@ Architectural Decisions & Trade-offs:
   it would create two divergent visual paths (live view vs evidence). The annotator
   is now the single source of visual truth.
 """
+import os
 import cv2
 import zmq
 import time
 import numpy as np
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from sqlalchemy import text
 
 from src.services.face_processor import FaceProcessorService
@@ -38,30 +39,56 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("FaceInference")
 
 # --- System Integration Constants ---
-VIDEO_SUB_PORT = "tcp://127.0.0.1:5555"
-ORCHESTRATOR_PUSH_PORT = "tcp://127.0.0.1:5556"
-ANNOTATOR_PUB_PORT = "tcp://127.0.0.1:5558"
+# Endpoints sourced from the environment so deployment topology can change
+# without code edits. Defaults preserve the original developer-machine layout.
+VIDEO_SUB_PORT = os.getenv("VIDEO_SUB_PORT", "tcp://127.0.0.1:5555")
+ORCHESTRATOR_PUSH_PORT = os.getenv("ORCHESTRATOR_PUSH_PORT", "tcp://127.0.0.1:5556")
+ANNOTATOR_PUB_PORT = os.getenv("ANNOTATOR_PUB_PORT", "tcp://127.0.0.1:5558")
 MODULE_NAME = "face"
-CAMERA_ID = "main_camera"
+CAMERA_ID = os.getenv("CAMERA_ID", "main_camera")
 
 # Boundary Warning: In pgvector, the <=> operator calculates Cosine Distance 
 # (0.0 is a mathematically perfect match, 1.0 is completely orthogonal).
 # A threshold of 0.40 guarantees a >60% mathematical similarity, aggressively minimizing 
 # false positives at the risk of slightly higher false negatives (which is preferable in physical security).
-MAX_ALLOWED_DISTANCE = 0.40 
+MAX_ALLOWED_DISTANCE = float(os.getenv("FACE_MAX_ALLOWED_DISTANCE", "0.40"))
 
 
-def _decode_frame(frame_bytes: bytes) -> np.ndarray:
-    """Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix."""
+def _decode_frame(frame_bytes: bytes) -> Optional[np.ndarray]:
+    """
+    Deserializes the IPC byte payload into an OpenCV-compatible BGR matrix.
+
+    Returns None if the bytes are corrupt or unreadable, allowing the caller
+    to skip the frame instead of letting a downstream call raise on a
+    malformed buffer.
+
+    Args:
+        frame_bytes (bytes): The raw byte array transmitted over ZeroMQ.
+
+    Returns:
+        Optional[np.ndarray]: A multi-dimensional array representing the image
+        frame, or None if decoding failed.
+    """
     frame_np = np.frombuffer(frame_bytes, dtype=np.uint8)
     return cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
 
 
 def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
-    """Executes a high-speed nearest-neighbor search against the PostgreSQL vector index."""
+    """
+    Executes a high-speed nearest-neighbor search against the PostgreSQL vector index.
+
+    Args:
+        embedding (np.ndarray): The 512-dimensional L2-normalized face vector.
+
+    Returns:
+        Tuple[str, float]: The database identifier (name) and the calculated cosine distance.
+                           Returns "unknown_person" if the distance exceeds the security threshold.
+    """
     db = SessionLocal()
     try:
         vector_list = embedding.tolist()
+          # Native SQL utilizing the pgvector <=> operator forces the database engine 
+        # to execute the nearest-neighbor calculation, keeping the Python worker stateless.
         query = text("""
             SELECT full_name, (face_embedding <=> :vector) AS distance
             FROM persons
@@ -72,6 +99,7 @@ def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
         result = db.execute(query, {"vector": str(vector_list)}).fetchone()
         if result:
             name, distance = result
+            # Strict security gate enforcement
             if distance <= MAX_ALLOWED_DISTANCE:
                 return name, float(distance)
             return "unknown_person", float(distance)
@@ -84,14 +112,21 @@ def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
 
 
 def start_face_model() -> None:
-    """Initializes the AI process, establishes IPC pipelines, and enters the polling loop."""
-    context = zmq.Context()
+    """
+    Initializes the AI process, establishes IPC pipelines, and enters the infinite polling loop.
     
+    Constraints:
+        Designed as an isolated multiprocess target. Do not call this synchronously 
+        within an ASGI event loop.
+    """
+    context = zmq.Context()
+    # Establish read-only ingestion pipeline
     video_receiver = context.socket(zmq.SUB)
     video_receiver.connect(VIDEO_SUB_PORT)
     video_receiver.setsockopt_string(zmq.SUBSCRIBE, "")
     video_receiver.setsockopt(zmq.CONFLATE, 1)
 
+   # Establish write-only orchestration pipeline
     result_sender = context.socket(zmq.PUSH)
     result_sender.connect(ORCHESTRATOR_PUSH_PORT)
 
@@ -100,16 +135,34 @@ def start_face_model() -> None:
 
     logger.info("Initializing FaceProcessorService (InsightFace)...")
     try:
+        # Instantiating the AI service dynamically claims VRAM. 
+        # Failure here indicates hardware resource exhaustion or missing CUDA libraries.
+
         ai_service = FaceProcessorService()
         logger.info("Face module loaded into VRAM. Listening for video stream...")
     except Exception as e:
         logger.critical(f"FATAL: Could not load AI models into memory: {e}")
         return
 
+    # Aggregated counter for decode failures so we can surface persistent
+    # corruption without flooding the journal on a single bad packet.
+    decode_failures = 0
+
     while True:
         try:
             frame_bytes = video_receiver.recv()
             frame = _decode_frame(frame_bytes)
+            if frame is None:
+                decode_failures += 1
+                # Log every 30th failure to flag persistent issues without
+                # spamming the logs on a transient corrupt frame.
+                if decode_failures % 30 == 1:
+                    logger.warning(
+                        f"Frame decode returned None ({decode_failures} total); "
+                        "skipping inference for this frame."
+                    )
+                continue
+
             detections_payload = []
 
             faces = ai_service.app.get(frame)
@@ -149,5 +202,6 @@ def start_face_model() -> None:
                 result_sender.send_json(payload)
 
         except Exception as e:
+            # Catching generic exceptions prevents a single bad frame matrix from killing the entire worker.
             logger.debug(f"Inference cycle error: {e}")
 
