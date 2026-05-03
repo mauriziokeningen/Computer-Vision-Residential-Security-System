@@ -64,14 +64,35 @@ def main():
         logger.error(f"FATAL: Data vault not found at {vault_path}.")
         return
 
-    # 3. Spin Up the Data Engine
-    logger.info("Igniting High-Performance Data Engine...")
-    full_dataset = TT2SecurityDataset(data_dir=str(vault_path))
+    # 3. Spin Up the Data Engine (Cross-Subject Split)
+    logger.info("Parsing data vault for Cross-Subject (X-Sub) Split...")
+    all_files = list(vault_path.glob("*.avi"))
     
-    # Standard 80/20 Train-Validation Split
-    train_size = int(0.8 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    # Official NTU RGB+D Cross-Subject Training IDs
+    train_subjects = {1, 2, 4, 5, 8, 9, 13, 14, 15, 16, 17, 18, 19, 25, 27, 28, 31, 34, 35, 38}
+    
+    train_files = []
+    val_files = []
+    
+    for file_path in all_files:
+        filename = file_path.name
+        # Extract the 3-digit subject ID following 'P' (e.g., S001C001P003R001A050 -> 003)
+        try:
+            subject_idx = filename.find('P') + 1
+            subject_id = int(filename[subject_idx:subject_idx+3])
+            
+            if subject_id in train_subjects:
+                train_files.append(file_path)
+            else:
+                val_files.append(file_path)
+        except (ValueError, IndexError):
+            logger.warning(f"Could not parse subject ID from {filename}. Skipping.")
+            
+    logger.info(f"X-Sub Split Complete: {len(train_files)} Train assets, {len(val_files)} Validation assets.")
+
+    # Instantiate datasets using explicit file lists instead of globbing the whole directory
+    train_dataset = TT2SecurityDataset(video_paths=train_files)
+    val_dataset = TT2SecurityDataset(video_paths=val_files)
     
     # Dataloaders: batch_size=4 is VRAM safe, num_workers=4 maximizes SSD bandwidth
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4, pin_memory=True)
@@ -88,7 +109,7 @@ def main():
     mlflow.enable_system_metrics_logging()
 
     mlflow_logger = MLFlowLogger(
-        experiment_name="TT2_Pilot_Run",
+        experiment_name="TT2_Production_Run",
         # [SOTA FIX] Upgraded from local files to a relational database
         tracking_uri="sqlite:///mlflow.db"
     )
@@ -99,7 +120,7 @@ def main():
     # 6. SOTA Automated Guardrails
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints/",
-        filename="tt2-pilot-{epoch:02d}-{val_loss:.2f}",
+        filename="tt2-prod-{epoch:02d}-{val_loss:.2f}",
         save_top_k=1,
         monitor="val/loss",
         mode="min"
@@ -118,14 +139,12 @@ def main():
     # =========================================================================
     # 7. THE PILOT RUN CONFIGURATION
     # =========================================================================
-    logger.info("Initializing PyTorch Lightning Trainer (PILOT MODE)...")
+    logger.info("INITIATING FULL PRODUCTION RUN")
     trainer = pl.Trainer(
-        max_epochs=2,                 # Restrict to 2 full passes
+        max_epochs=50,                 # <--- INCREASED TO 50
         accelerator="gpu",
         devices=1,
         precision="16-mixed",         # [SOTA] Double VRAM capacity via Mixed Precision
-        limit_train_batches=0.05,     # <--- 5% PILOT CONSTRAINT
-        limit_val_batches=0.05,       # <--- 5% PILOT CONSTRAINT
         logger=mlflow_logger,
         callbacks=[
             checkpoint_callback, 
@@ -134,16 +153,16 @@ def main():
             device_monitor, 
             lr_monitor
         ],
-        log_every_n_steps=1          # Force logging often since we only have 5% of data
+        log_every_n_steps=10          # Relaxed logging frequency for speed
     )
 
     # 8. Engage!
     logger.info("=" * 60)
-    logger.info("INITIATING 5% PILOT RUN")
+    logger.info("INITIATING FULL PRODUCTION RUN")
     logger.info("=" * 60)
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     
-    logger.info("Pilot Run Complete. Run 'mlflow ui' in your terminal to view telemetry.")
+    logger.info("Production Run Complete. Run 'mlflow ui' in your terminal to view telemetry.")
 
 if __name__ == "__main__":
     # Workaround for multiprocessing on some Linux environments
