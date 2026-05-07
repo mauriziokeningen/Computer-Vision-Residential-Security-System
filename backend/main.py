@@ -10,6 +10,7 @@ import sys
 from src.ingestion.stream import start_ingestion
 from src.modules.face.inference import start_face_model
 from src.modules.weapons.inference import start_weapon_model
+from src.modules.pose.inference_stgcn import start_pose_model
 from src.orchestrator.rules import start_orchestrator
 from src.annotator.process import start_annotator
 
@@ -35,6 +36,7 @@ def main() -> None:
         multiprocessing.Process(target=start_annotator,    name="Annotator_Process"),
         multiprocessing.Process(target=start_face_model,   name="Face_Process"),
         multiprocessing.Process(target=start_weapon_model, name="Weapon_Process"),
+        multiprocessing.Process(target=start_pose_model,   name="Pose_Process"),
         multiprocessing.Process(target=start_ingestion,    name="Ingestion_Process"),
     ]
 
