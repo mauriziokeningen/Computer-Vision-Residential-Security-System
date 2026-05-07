@@ -103,3 +103,6 @@ artifacts/
 !/research/data/raw/.gitkeep
 !/research/data/processed/.gitkeep
 !/research/notebooks/.gitkeep
+
+backend/src/modules/pose/weights/*
+!/backend/src/modules/pose/weights/.gitkeep
