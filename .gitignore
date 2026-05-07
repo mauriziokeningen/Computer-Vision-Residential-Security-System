@@ -103,3 +103,9 @@ artifacts/
 !/research/data/raw/.gitkeep
 !/research/data/processed/.gitkeep
 !/research/notebooks/.gitkeep
+
+# Ignore everything inside the data folder
+research/Body Movement/data/*
+
+# ...But do not ignore the .gitkeep file
+!research/Body Movement/data/.gitkeep
