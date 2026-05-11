@@ -104,6 +104,8 @@ artifacts/
 !/research/data/processed/.gitkeep
 !/research/notebooks/.gitkeep
 
+backend/src/modules/pose/weights/*
+!/backend/src/modules/pose/weights/.gitkeep
 # Ignore everything inside the data folder
 research/Body Movement/data/*
 
