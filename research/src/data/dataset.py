@@ -26,37 +26,29 @@ class TT2SecurityDataset(Dataset):
     """
     def __init__(
         self, 
-        data_dir: str, 
+        data_dir: str = None,
+        video_paths: List[Path] = None,
         num_frames: int = 16, 
         target_size: int = 224
     ) -> None:
-        self.data_dir = Path(data_dir)
         self.num_frames = num_frames
         self.target_size = target_size
-        
-        # [SECURITY LOGIC] Threat = 1, Hard Negative = 0
-        # A050: Punch/Slap, A051: Kicking, A052: Pushing
         self.threat_classes: Set[str] = {"A050", "A051", "A052"}
         
-        # [I/O] Glob all video assets. In production, this would hit an S3 bucket or DB.
-        self.video_paths: List[Path] = list(self.data_dir.glob("*.avi"))
+        # [SOTA FIX] Allow the orchestrator to inject a specific split of files
+        if video_paths is not None:
+            self.video_paths = video_paths
+        elif data_dir is not None:
+            self.data_dir = Path(data_dir)
+            self.video_paths = list(self.data_dir.glob("*.avi"))
+        else:
+            raise ValueError("Must provide either data_dir or video_paths")
+            
         if not self.video_paths:
-            logger.error(f"FATAL: No .avi files found in {self.data_dir}. Vault is empty.")
-            raise FileNotFoundError(f"Vault empty at {self.data_dir}")
-
-        # [SOTA] Pre-allocate Transformer Normalization Math (ImageNet Statistics)
-        # VideoMAE v2 backbone requires these exact mean/std values.
-        self.normalize = Normalize(
-            mean=[0.485, 0.456, 0.406], 
-            std=[0.229, 0.224, 0.225]
-        )
-        
-        # [SOTA] Deterministic resizing for Transformer Patch Embeddings
-        self.resize = Resize(
-            (self.target_size, self.target_size), 
-            interpolation=InterpolationMode.BILINEAR, 
-            antialias=True
-        )
+            raise FileNotFoundError("No video assets provided or found.")
+            
+        self.normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        self.resize = Resize((self.target_size, self.target_size), interpolation=InterpolationMode.BILINEAR, antialias=True)
 
         logger.info(f"Engine Online. Mapping {len(self.video_paths)} assets to Spacetime Tensors.")
 
