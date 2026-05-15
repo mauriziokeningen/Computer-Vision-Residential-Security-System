@@ -160,13 +160,40 @@ def start_weapon_model() -> None:
                 continue
 
             t0 = time.time()
-            results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
+            # Track instead of plain inference. ByteTrack assigns a stable
+            # integer ID to each detection across frames, so a flickering
+            # confidence on the same physical object is observable as a single
+            # track in the orchestrator (which then applies the debouncer).
+            # `persist=True` keeps the tracker state between calls; otherwise
+            # IDs would reset every frame and tracking would be meaningless.
+            results = model.track(
+                frame,
+                verbose=False,
+                conf=CONFIDENCE_THRESHOLD,
+                tracker="bytetrack.yaml",
+                persist=True,
+            )
             infer_ms = (time.time() - t0) * 1000.0
 
             detections_payload = []
 
             for result in results:
-                for box in result.boxes:
+                if result.boxes is None:
+                    continue
+
+                # `result.boxes.id` is None when the tracker has not yet
+                # confirmed a track (typical for the first 1-2 frames of an
+                # object's life). We surface those detections with track_id
+                # = None so the orchestrator can still log them, but the
+                # debouncer keys on track_id and will simply not increment
+                # any counter for them.
+                track_ids = (
+                    result.boxes.id.int().cpu().tolist()
+                    if result.boxes.id is not None
+                    else [None] * len(result.boxes)
+                )
+
+                for box, track_id in zip(result.boxes, track_ids):
                     cls_id = int(box.cls[0])
                     cls_name = model.names[cls_id]
 
@@ -180,6 +207,7 @@ def start_weapon_model() -> None:
                         "class": cls_name,
                         "confidence": round(confidence, 4),
                         "bbox": bbox,
+                        "track_id": track_id,
                     })
 
             # Only publish on positive detections. Empty publishes would clear
@@ -204,8 +232,10 @@ def start_weapon_model() -> None:
                 result_sender.send_json(payload)
 
                 for d in detections_payload:
+                    tid = d.get("track_id")
+                    tid_str = f"id={tid}" if tid is not None else "id=?"
                     logger.warning(
-                        f"[WEAPON DETECTED] {d['class']} "
+                        f"[WEAPON DETECTED] {d['class']} {tid_str} "
                         f"conf={d['confidence']*100:.1f}% "
                         f"infer={infer_ms:.0f}ms"
                     )
@@ -219,4 +249,3 @@ def start_weapon_model() -> None:
 
         except Exception as e:
             logger.debug(f"Inference cycle error: {e}")
-

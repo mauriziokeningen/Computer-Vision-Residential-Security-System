@@ -37,6 +37,26 @@ ANNOTATED_SUB_PORT = os.getenv("ANNOTATED_PUB_PORT", "tcp://127.0.0.1:5557")
 # events before evaluating compound rules.
 COMPOUND_EVENT_WINDOW_SECONDS = float(os.getenv("COMPOUND_EVENT_WINDOW_SECONDS", "2.0"))
 
+# --- Weapon debouncer parameters ---
+# A single high-confidence frame is not enough to fire a weapon alert. With
+# ByteTrack assigning a stable id per physical object, we require a track to
+# accumulate `WEAPON_DEBOUNCE_HITS` detections within `WEAPON_DEBOUNCE_WINDOW`
+# seconds before promoting it to a real incident. This kills isolated flicker
+# false positives without sacrificing latency on real threats: at 10 FPS, 5
+# hits is ~0.5s of sustained detection, well below human reaction time.
+#
+# `WEAPON_DEBOUNCE_MIN_AVG_CONF` is a second gate on the rolling average
+# confidence inside the window. Useful when the model produces sustained but
+# low-confidence detections (often a sign of an ambiguous object like a
+# phone or remote being mis-classified at low conf).
+WEAPON_DEBOUNCE_HITS = int(os.getenv("WEAPON_DEBOUNCE_HITS", "5"))
+WEAPON_DEBOUNCE_WINDOW = float(os.getenv("WEAPON_DEBOUNCE_WINDOW", "1.5"))
+WEAPON_DEBOUNCE_MIN_AVG_CONF = float(os.getenv("WEAPON_DEBOUNCE_MIN_AVG_CONF", "0.60"))
+# How long (seconds) to keep a track in the debouncer buffer with no new
+# hits before garbage-collecting it. Prevents the buffer from growing forever
+# when many short-lived tracks pass through.
+WEAPON_TRACK_TTL = float(os.getenv("WEAPON_TRACK_TTL", "5.0"))
+
 # Internal API endpoint for alert broadcasting. Kept env-driven so the
 # orchestrator and the FastAPI host can be deployed on different machines.
 ALERT_API_URL = os.getenv("ALERT_API_URL", "http://127.0.0.1:8000/api/alerts/")
@@ -99,6 +119,105 @@ class AnnotatedFrameBuffer:
 # module attribute (not a true global mutable) so the helper functions
 # (_save_evidence, etc.) can access it without threading every signature.
 _frame_buffer: Optional[AnnotatedFrameBuffer] = None
+
+
+class WeaponDebouncer:
+    """
+    Per-track debouncer for weapon detections.
+
+    A single high-confidence frame is not sufficient to promote a detection
+    into an incident: model output flickers, and the false-positive curve at
+    high confidence is non-zero (see F1-Confidence analysis). Combined with
+    the inference worker's switch from `model()` to `model.track()`, every
+    detection now carries a stable `track_id` issued by ByteTrack — which
+    means we can reason about the same physical object across frames.
+
+    A track must accumulate at least `hits` detections within `window`
+    seconds AND maintain a rolling average confidence ≥ `min_avg_conf`
+    before this debouncer returns True. Once a track has been confirmed,
+    it is flagged so subsequent frames of the same track do not re-trigger
+    the (expensive) incident pipeline — that responsibility belongs to the
+    cooldown table downstream.
+
+    Tracks that go silent for more than `ttl` seconds are evicted on the
+    next access. The expected steady-state size is O(active threats per
+    camera), which in residential CCTV is ~0-2.
+    """
+
+    def __init__(
+        self,
+        hits: int,
+        window_seconds: float,
+        min_avg_conf: float,
+        ttl_seconds: float,
+    ):
+        self._hits = hits
+        self._window = window_seconds
+        self._min_avg_conf = min_avg_conf
+        self._ttl = ttl_seconds
+        # key: (camera_id, track_id, class) -> {"events": [(t, conf), ...], "confirmed": bool}
+        # We key on class too because the same track_id flipping between
+        # 'knife' and 'pistol' should not borrow confirmations across classes
+        # (rare in practice but defensive).
+        self._tracks: Dict[tuple, Dict[str, Any]] = {}
+
+    def _gc(self, now: float) -> None:
+        """Evict tracks idle for longer than ttl."""
+        stale = [
+            key for key, state in self._tracks.items()
+            if not state["events"] or (now - state["events"][-1][0]) > self._ttl
+        ]
+        for key in stale:
+            del self._tracks[key]
+
+    def observe(
+        self,
+        camera_id: str,
+        track_id: Optional[int],
+        cls: str,
+        confidence: float,
+    ) -> bool:
+        """
+        Record one detection and return True iff this track has just been
+        confirmed as a real incident (transitions from unconfirmed to
+        confirmed). Subsequent calls on a confirmed track return False, so
+        the caller fires the incident exactly once per track lifetime.
+
+        track_id may be None during the first 1-2 frames of an object's
+        life (ByteTrack has not yet assigned an id). We treat those as
+        non-debounceable and never confirm them — the next frame, once the
+        tracker has stabilized, will start the counter.
+        """
+        if track_id is None:
+            return False
+
+        now = time.time()
+        # Periodic eviction. Cheap: a dozen tracks max in residential CCTV.
+        self._gc(now)
+
+        key = (camera_id, track_id, cls)
+        state = self._tracks.setdefault(key, {"events": [], "confirmed": False})
+
+        # Drop events outside the rolling window before appending the new one.
+        state["events"] = [(t, c) for (t, c) in state["events"] if (now - t) <= self._window]
+        state["events"].append((now, confidence))
+
+        if state["confirmed"]:
+            return False
+
+        if len(state["events"]) < self._hits:
+            return False
+
+        avg_conf = sum(c for _, c in state["events"]) / len(state["events"])
+        if avg_conf < self._min_avg_conf:
+            return False
+
+        state["confirmed"] = True
+        return True
+
+
+# Populated when start_orchestrator() runs, same pattern as _frame_buffer.
+_weapon_debouncer: Optional[WeaponDebouncer] = None
 
 
 PRIORITY_LOW = "LOW"
@@ -277,16 +396,34 @@ def _evaluate_weapon_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]
     for detection in detections:
         weapon_class = detection.get("class", "unknown")
         confidence = detection.get("confidence", 0.0)
+        track_id = detection.get("track_id")
         conf_pct = confidence * 100
 
+        # The summary is populated for ALL detections (even unconfirmed ones),
+        # because the compound rule engine should still know a weapon was
+        # spotted in this window. Only the standalone WEAPON_DETECTED
+        # incident is gated by the debouncer.
         weapon_summary["weapon_detected"] = True
         weapon_summary["weapons"].append(weapon_class)
+
+        # Debouncer: only the first frame that promotes this track to
+        # 'confirmed' returns True. All other frames of the same track
+        # return False so we don't re-enter the incident pipeline.
+        confirmed = (
+            _weapon_debouncer is not None
+            and _weapon_debouncer.observe(camera_id, track_id, weapon_class, confidence)
+        )
+        if not confirmed:
+            continue
 
         if _check_cooldown(camera_id, "WEAPON_DETECTED"):
             incident = _create_incident(db, event, "WEAPON_DETECTED", PRIORITY_HIGH)
             _create_alert(db, incident.id, f"ARMA DETECTADA: {weapon_class} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
             _save_evidence(incident.id, camera_id, frame_data)
-            logger.warning(f"[WEAPON ALERT] {weapon_class} detected at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
+            logger.warning(
+                f"[WEAPON ALERT] {weapon_class} (track={track_id}) confirmed at "
+                f"{timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)"
+            )
 
     return weapon_summary
 
@@ -388,8 +525,19 @@ def start_orchestrator() -> None:
     # event arrives, minimizing the cold-start window where _save_evidence
     # would have nothing to persist. The buffer is exposed via a module-level
     # name so the helper functions can reach it without signature changes.
-    global _frame_buffer
+    global _frame_buffer, _weapon_debouncer
     _frame_buffer = AnnotatedFrameBuffer(ANNOTATED_SUB_PORT)
+    _weapon_debouncer = WeaponDebouncer(
+        hits=WEAPON_DEBOUNCE_HITS,
+        window_seconds=WEAPON_DEBOUNCE_WINDOW,
+        min_avg_conf=WEAPON_DEBOUNCE_MIN_AVG_CONF,
+        ttl_seconds=WEAPON_TRACK_TTL,
+    )
+    logger.info(
+        f"Weapon debouncer online (hits={WEAPON_DEBOUNCE_HITS}, "
+        f"window={WEAPON_DEBOUNCE_WINDOW}s, "
+        f"min_avg_conf={WEAPON_DEBOUNCE_MIN_AVG_CONF})"
+    )
 
     context = zmq.Context()
     receiver = context.socket(zmq.PULL)
@@ -431,4 +579,3 @@ def start_orchestrator() -> None:
 
         except Exception as e:
             logger.error(f"Error processing event: {e}")
-
