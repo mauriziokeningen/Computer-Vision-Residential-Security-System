@@ -106,9 +106,9 @@ export default function WebcamFeed({
       const canvas = canvasRef.current;
       if (!video || !canvas) return;
 
-      const w = 640;
-      const h = Math.round((video.videoHeight / video.videoWidth) * w);
-      if (!Number.isFinite(h) || h <= 0) return;
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!Number.isFinite(w) || w <= 0 || !Number.isFinite(h) || h <= 0) return;
 
       canvas.width = w;
       canvas.height = h;
@@ -144,6 +144,7 @@ export default function WebcamFeed({
       <video
         ref={videoRef}
         className="h-full w-full object-contain -scale-x-100 bg-black"
+        autoPlay
         playsInline
         muted
       />
