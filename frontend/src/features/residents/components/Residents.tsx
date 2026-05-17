@@ -49,6 +49,7 @@ export function Residents({ query = '' }: { query?: string }) {
   const [enrolling, setEnrolling] = useState(false);
   const [enrollMsg, setEnrollMsg] = useState('');
   const [enrollError, setEnrollError] = useState('');
+  const [isCapturing, setIsCapturing] = useState(false);
 
   // Toggle between the legacy file-upload path and the in-browser camera
   // capture path. Both produce the same File[] payload, so the submission
@@ -135,6 +136,9 @@ export function Residents({ query = '' }: { query?: string }) {
   // first empty slot. Quality 0.92 matches the backend evidence pipeline and
   // is well above the threshold where ArcFace landmark extraction degrades.
   const captureFromCamera = () => {
+
+    if (isCapturing) return;
+  
     const canvas = latestCanvasRef.current;
     if (!canvas) {
       setEnrollError('Camera frame not ready yet. Wait a moment and try again.');
@@ -144,8 +148,11 @@ export function Residents({ query = '' }: { query?: string }) {
     const nextSlot = enrollSlots.findIndex((slot) => slot === null);
     if (nextSlot === -1) return; // buffer saturated
 
+    setIsCapturing(true);
+
     canvas.toBlob(
       (blob) => {
+        setIsCapturing(false);
         if (!blob) {
           setEnrollError('Failed to capture frame from camera.');
           return;

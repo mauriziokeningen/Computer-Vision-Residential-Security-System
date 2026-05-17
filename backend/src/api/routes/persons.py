@@ -13,7 +13,14 @@ router = APIRouter(
     tags=["Enrollment"]
 )
 
-face_processor = FaceProcessorService()
+face_processor = None
+
+def get_face_processor():
+    """Lazy loader for the AI service."""
+    global face_processor
+    if face_processor is None:
+        face_processor = FaceProcessorService()
+    return face_processor
 
 
 @router.post("/", response_model=PersonResponse)
@@ -57,6 +64,8 @@ async def enroll_biometrics(
     person = db.query(Person).filter(Person.id == person_id).first()
     if not person:
         raise HTTPException(status_code=404, detail=f"Person with ID {person_id} not found.")
+    
+    ai_service = get_face_processor()
 
     embeddings = []
 
@@ -66,7 +75,7 @@ async def enroll_biometrics(
 
         try:
             image_bytes = await file.read()
-            vector = face_processor.extract_face_embedding(image_bytes)
+            vector = ai_service.extract_face_embedding(image_bytes)
             embeddings.append(vector)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Image {file.filename} rejected: {str(e)}")
@@ -76,7 +85,7 @@ async def enroll_biometrics(
             await file.close()
 
     try:
-        master_vector = face_processor.calculate_master_vector(embeddings)
+        master_vector = ai_service.calculate_master_vector(embeddings)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to calculate master vector: {str(e)}")
 
