@@ -5,6 +5,7 @@ import { buildWsUrl, apiFetch } from '../api/client';
 export function useAlertWebSocket() {
   const [alertCounts, setAlertCounts] = useState<AlertCounts>({ unread: 0, acknowledged: 0, resolved: 0 });
   const [isConnected, setIsConnected] = useState(false);
+  const [lastIncidentEvent, setLastIncidentEvent] = useState<number>(0);
 
   // 1. Initial Data Fetch
   useEffect(() => {
@@ -39,6 +40,7 @@ export function useAlertWebSocket() {
               resolved: msg.data.resolved,
             });
           } else if (msg.event_type === 'NEW_ALERT' || msg.event_type === 'ALERT_STATUS_CHANGED') {
+            setLastIncidentEvent(Date.now()); // 👈 señal global para todos los componentes
             Promise.all([
               apiFetch<{ count: number }>('/alerts/count?status=UNREAD'),
               apiFetch<{ count: number }>('/alerts/count?status=ACKNOWLEDGED'),
@@ -66,6 +68,5 @@ export function useAlertWebSocket() {
     };
   }, []);
 
-  return { alertCounts, isConnected };
+  return { alertCounts, isConnected, lastIncidentEvent };
 }
-

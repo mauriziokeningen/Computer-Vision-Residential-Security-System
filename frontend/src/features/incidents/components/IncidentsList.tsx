@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Bell,
   ChevronRight,
@@ -25,7 +25,7 @@ import { ApiIncident, EvidenceFile } from '../../../types';
 import { apiFetch } from '../../../api/client';
 import { formatTime, priorityToSeverity } from '../../../lib/format';
 
-export function IncidentsList({ query = '' }: { query?: string }) {
+export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: string; lastIncidentEvent?: number }) {
   const [incidents, setIncidents] = useState<ApiIncident[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -39,18 +39,27 @@ export function IncidentsList({ query = '' }: { query?: string }) {
   const [evidenceUrl, setEvidenceUrl] = useState('');
   const [selectedEvidenceName, setSelectedEvidenceName] = useState('');
 
-  const load = () => {
-    setLoading(true);
+  const load = useCallback((showLoader = false) => {
+    if (showLoader) setLoading(true);
     setError('');
     apiFetch<ApiIncident[]>('/incidents/?limit=30')
       .then(setIncidents)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    load();
   }, []);
+
+  // Carga inicial
+  useEffect(() => {
+    load(true);
+  }, [load]);
+
+  // Re-fetch cuando el WebSocket global detecta NEW_ALERT
+  // Esto dispara en TODAS las tabs simultáneamente — fix del bug #85
+  useEffect(() => {
+    if (lastIncidentEvent > 0) {
+      load(false);
+    }
+  }, [lastIncidentEvent, load]);
 
   useEffect(() => {
     if (!selected) {
@@ -101,7 +110,8 @@ export function IncidentsList({ query = '' }: { query?: string }) {
         body: JSON.stringify({ module, camera_id: 'cam-demo-01', detections }),
       });
       setSimSuccess(`✓ Incidente creado — Regla: ${result.rule_triggered} · Prioridad: ${result.priority}`);
-      load();
+      // ❌ load() removido — Tab A ahora espera el WebSocket igual que Tab B
+      // Esto garantiza sincronización real entre tabs, no optimistic update local
     } catch (e: any) {
       setSimError(`Error al simular: ${e.message}`);
     } finally {
@@ -240,7 +250,7 @@ export function IncidentsList({ query = '' }: { query?: string }) {
           <h2 className="text-lg font-semibold">Incidentes</h2>
           <p className="text-sm text-slate-500">Eventos detectados por los módulos de IA</p>
         </div>
-        <Button variant="outline" className="gap-2" onClick={load}>
+        <Button variant="outline" className="gap-2" onClick={() => load(true)}>
           <RefreshCw className="h-4 w-4" />Actualizar
         </Button>
       </div>
@@ -311,4 +321,3 @@ export function IncidentsList({ query = '' }: { query?: string }) {
     </div>
   );
 }
-
