@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   UserPlus,
   Loader2,
+  Camera,
 } from 'lucide-react';
 import {
   Card,
@@ -19,6 +20,12 @@ import { ErrorBanner, SuccessBanner } from '../../../components/ui/banner';
 
 import { ApiPerson } from '../../../types';
 import { apiFetch } from '../../../api/client';
+import WebcamFeed from './WebcamFeed';
+
+// Pose hints for the in-browser camera capture path. The backend treats the
+// three files as an unordered set; these labels are UI affordances only, to
+// nudge the operator into varying head angles for a richer master vector.
+const POSE_HINTS = ['Front', 'Left', 'Right'] as const;
 
 export function Residents({ query = '' }: { query?: string }) {
   const [persons, setPersons] = useState<ApiPerson[]>([]);
@@ -42,6 +49,17 @@ export function Residents({ query = '' }: { query?: string }) {
   const [enrolling, setEnrolling] = useState(false);
   const [enrollMsg, setEnrollMsg] = useState('');
   const [enrollError, setEnrollError] = useState('');
+  const [isCapturing, setIsCapturing] = useState(false);
+
+  // Toggle between the legacy file-upload path and the in-browser camera
+  // capture path. Both produce the same File[] payload, so the submission
+  // pipeline downstream is unchanged.
+  const [captureMode, setCaptureMode] = useState<'upload' | 'camera'>('upload');
+
+  // Latest live frame from WebcamFeed. WebcamFeed paints its hidden canvas
+  // continuously; we keep a pointer here so captureFromCamera can snapshot
+  // the most recent frame synchronously on click.
+  const latestCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const load = () => {
     setLoadError('');
@@ -107,6 +125,52 @@ export function Residents({ query = '' }: { query?: string }) {
     setEnrollSlots([null, null, null]);
   };
 
+  // WebcamFeed pushes its hidden canvas here on every painted frame. Storing
+  // the reference (not the pixel data) keeps this callback O(1) and stable
+  // across re-renders.
+  const handleFrame = useCallback((canvas: HTMLCanvasElement) => {
+    latestCanvasRef.current = canvas;
+  }, []);
+
+  // Snapshot the latest webcam frame into a JPEG File and drop it into the
+  // first empty slot. Quality 0.92 matches the backend evidence pipeline and
+  // is well above the threshold where ArcFace landmark extraction degrades.
+  const captureFromCamera = () => {
+
+    if (isCapturing) return;
+  
+    const canvas = latestCanvasRef.current;
+    if (!canvas) {
+      setEnrollError('Camera frame not ready yet. Wait a moment and try again.');
+      return;
+    }
+
+    const nextSlot = enrollSlots.findIndex((slot) => slot === null);
+    if (nextSlot === -1) return; // buffer saturated
+
+    setIsCapturing(true);
+
+    canvas.toBlob(
+      (blob) => {
+        setIsCapturing(false);
+        if (!blob) {
+          setEnrollError('Failed to capture frame from camera.');
+          return;
+        }
+        const poseHint = POSE_HINTS[nextSlot].toLowerCase();
+        const file = new File(
+          [blob],
+          `enrollment_${poseHint}_${Date.now()}.jpg`,
+          { type: 'image/jpeg' }
+        );
+        setSlotFile(nextSlot, file);
+        setEnrollError('');
+      },
+      'image/jpeg',
+      0.92
+    );
+  };
+
   const enrollBiometrics = async (personId: string) => {
     const validFiles = enrollSlots.filter(Boolean) as File[];
     if (validFiles.length !== 3) {
@@ -156,6 +220,8 @@ export function Residents({ query = '' }: { query?: string }) {
   const isVisitor = form.person_type === 'VISITOR';
   const stagedCount = enrollSlots.filter(Boolean).length;
   const canFinalizeEnrollment = stagedCount === 3;
+  const nextSlotIndex = enrollSlots.findIndex((slot) => slot === null);
+  const bufferSaturated = nextSlotIndex === -1;
 
   return (
     <div className="space-y-4">
@@ -225,6 +291,68 @@ export function Residents({ query = '' }: { query?: string }) {
                             </Badge>
                           </div>
 
+                          {/* Capture mode toggle. Both modes populate the same
+                              File[] buffer downstream; only the source of the
+                              File objects differs. */}
+                          <div className="flex gap-2 text-xs">
+                            <button
+                              type="button"
+                              onClick={() => setCaptureMode('upload')}
+                              className={`px-3 py-1 rounded-md border transition ${
+                                captureMode === 'upload'
+                                  ? 'bg-slate-900 text-white border-slate-900'
+                                  : 'bg-white text-slate-700 hover:bg-slate-100'
+                              }`}
+                            >
+                              Upload files
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setCaptureMode('camera')}
+                              className={`px-3 py-1 rounded-md border transition ${
+                                captureMode === 'camera'
+                                  ? 'bg-slate-900 text-white border-slate-900'
+                                  : 'bg-white text-slate-700 hover:bg-slate-100'
+                              }`}
+                            >
+                              Capture from camera
+                            </button>
+                          </div>
+
+                          {/* Live webcam viewport (only mounted in camera mode
+                              so getUserMedia is not held open while uploading). */}
+                          {captureMode === 'camera' && (
+                            <div className="space-y-2">
+                              <div className="relative aspect-video rounded-lg overflow-hidden bg-black">
+                                <WebcamFeed
+                                  className="absolute inset-0"
+                                  onFrame={handleFrame}
+                                  fps={8}
+                                />
+                                {!bufferSaturated && (
+                                  <div className="absolute bottom-2 left-2 right-2 bg-black/60 text-white text-xs rounded px-2 py-1">
+                                    Next: <span className="font-semibold">{POSE_HINTS[nextSlotIndex]}</span>
+                                    {' · '}
+                                    {nextSlotIndex === 0 && 'Look straight at the camera'}
+                                    {nextSlotIndex === 1 && 'Turn your head slightly to the left'}
+                                    {nextSlotIndex === 2 && 'Turn your head slightly to the right'}
+                                  </div>
+                                )}
+                              </div>
+                              <Button
+                                size="sm"
+                                onClick={captureFromCamera}
+                                disabled={bufferSaturated || enrolling}
+                                className="gap-2"
+                              >
+                                <Camera className="h-3 w-3" />
+                                {bufferSaturated
+                                  ? 'Buffer full · retake a slot below'
+                                  : `Capture ${POSE_HINTS[nextSlotIndex]} frame`}
+                              </Button>
+                            </div>
+                          )}
+
                           <div className="grid gap-3">
                             {enrollSlots.map((file, slotIndex) => (
                               <div key={slotIndex} className="rounded-lg border p-3 bg-slate-50">
@@ -236,18 +364,23 @@ export function Residents({ query = '' }: { query?: string }) {
                                     </div>
                                   </div>
                                   <div className="flex gap-2">
-                                    <label className="inline-flex">
-                                      <input
-                                        type="file"
-                                        accept="image/jpeg,image/png"
-                                        className="hidden"
-                                        onChange={(e) => setSlotFile(slotIndex, e.target.files?.[0] ?? null)}
-                                        onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
-                                      />
-                                      <span className="inline-flex items-center rounded-md border px-3 py-1 text-xs cursor-pointer bg-white hover:bg-slate-100">
-                                        {file ? 'Retake' : 'Capture'}
-                                      </span>
-                                    </label>
+                                    {/* Upload-mode controls. Hidden in camera
+                                        mode so the operator isn't tempted to
+                                        mix sources within one session. */}
+                                    {captureMode === 'upload' && (
+                                      <label className="inline-flex">
+                                        <input
+                                          type="file"
+                                          accept="image/jpeg,image/png"
+                                          className="hidden"
+                                          onChange={(e) => setSlotFile(slotIndex, e.target.files?.[0] ?? null)}
+                                          onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
+                                        />
+                                        <span className="inline-flex items-center rounded-md border px-3 py-1 text-xs cursor-pointer bg-white hover:bg-slate-100">
+                                          {file ? 'Retake' : 'Capture'}
+                                        </span>
+                                      </label>
+                                    )}
                                     <Button
                                       size="sm"
                                       variant="ghost"
@@ -398,4 +531,3 @@ export function Residents({ query = '' }: { query?: string }) {
     </div>
   );
 }
-
