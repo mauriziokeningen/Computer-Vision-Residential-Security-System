@@ -31,6 +31,7 @@ opencv-python==4.10.0.84
 deepface==0.0.95
 retina-face==0.0.17
 ultralytics==8.4.37
+lap>=0.5.12
 mtcnn==1.0.0
 pillow==12.0.0
 
