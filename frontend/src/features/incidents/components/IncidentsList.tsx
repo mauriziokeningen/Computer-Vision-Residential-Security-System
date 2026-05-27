@@ -76,9 +76,9 @@ export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: s
         method: 'POST',
         body: JSON.stringify({ module, camera_id: 'cam-demo-01', detections }),
       });
-      setSimSuccess(`✓ Incidente creado — Regla: ${result.rule_triggered} · Prioridad: ${result.priority}`);
+      setSimSuccess(`✓ ${t.incidents.simulateTitle} — ${result.rule_triggered} · ${result.priority}`);
     } catch (e: any) {
-      setSimError(`Error al simular: ${e.message}`);
+      setSimError(`Error: ${e.message}`);
     } finally {
       setSimulating(null);
     }
@@ -118,15 +118,21 @@ export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: s
           <CardContent className="space-y-3">
             {evidenceLoading ? (
               <div className="aspect-video rounded-xl border bg-slate-50 grid place-items-center text-slate-500">
-                <div className="flex items-center gap-2 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{t.incidents.loadingEvidence}</div>
+                <div className="flex items-center gap-2 text-sm">
+                  <Loader2 className="h-4 w-4 animate-spin" />{t.incidents.loadingEvidence}
+                </div>
               </div>
             ) : evidenceError ? (
               <div className="aspect-video rounded-xl border border-red-200 bg-red-50 grid place-items-center text-red-700 p-6 text-center">
-                <div className="space-y-2"><XCircle className="h-8 w-8 mx-auto" /><p className="font-medium">{t.incidents.evidenceError}</p><p className="text-sm">{evidenceError}</p></div>
+                <div className="space-y-2">
+                  <XCircle className="h-8 w-8 mx-auto" />
+                  <p className="font-medium">{t.incidents.evidenceError}</p>
+                  <p className="text-sm">{evidenceError}</p>
+                </div>
               </div>
             ) : evidenceUrl && isImage ? (
               <div className="aspect-video rounded-xl border overflow-hidden bg-black">
-                <img src={evidenceUrl} alt="Incident evidence" className="h-full w-full object-contain" />
+                <img src={evidenceUrl} alt="evidence" className="h-full w-full object-contain" />
               </div>
             ) : evidenceUrl && isVideo ? (
               <div className="aspect-video rounded-xl border overflow-hidden bg-black">
@@ -134,12 +140,23 @@ export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: s
               </div>
             ) : (
               <div className="aspect-video rounded-xl border border-dashed bg-slate-50 grid place-items-center text-slate-500 p-6 text-center">
-                <div className="space-y-2"><Database className="h-8 w-8 mx-auto" /><p className="font-medium">{t.incidents.noEvidence}</p><p className="text-sm">{t.incidents.noEvidenceDesc}</p></div>
+                <div className="space-y-2">
+                  <Database className="h-8 w-8 mx-auto" />
+                  <p className="font-medium">{t.incidents.noEvidence}</p>
+                  <p className="text-sm">{t.incidents.noEvidenceDesc}</p>
+                </div>
               </div>
             )}
             <div className="grid md:grid-cols-3 gap-3 text-xs">
-              {[[t.incidents.labelModule, meta.module], [t.incidents.labelRule, meta.rule_triggered], [t.incidents.labelPriority, meta.priority]].map(([k, v]) => (
-                <div key={k} className="rounded-lg border p-2"><div className="font-medium">{k}</div><div className="text-slate-500">{v ?? '–'}</div></div>
+              {[
+                [t.incidents.labelModule, meta.module],
+                [t.incidents.labelRule, meta.rule_triggered],
+                [t.incidents.labelPriority, meta.priority],
+              ].map(([k, v]) => (
+                <div key={k} className="rounded-lg border p-2">
+                  <div className="font-medium">{k}</div>
+                  <div className="text-slate-500">{v ?? '–'}</div>
+                </div>
               ))}
             </div>
           </CardContent>
@@ -152,9 +169,18 @@ export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: s
         <Card>
           <CardHeader><CardTitle>{t.incidents.metadata}</CardTitle></CardHeader>
           <CardContent className="space-y-3 text-sm">
-            <div className="flex justify-between"><span>{t.incidents.priority}</span><SeverityBadge level={priorityToSeverity(meta.priority)} /></div>
-            <div className="flex justify-between"><span>{t.incidents.camera}</span><span>{meta.camera_id ?? '–'}</span></div>
-            <div className="flex justify-between"><span>ID</span><span className="text-xs text-slate-400">{selected.id.slice(0, 8)}…</span></div>
+            <div className="flex justify-between">
+              <span>{t.incidents.priority}</span>
+              <SeverityBadge level={priorityToSeverity(meta.priority)} />
+            </div>
+            <div className="flex justify-between">
+              <span>{t.incidents.camera}</span>
+              <span>{meta.camera_id ?? '–'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>ID</span>
+              <span className="text-xs text-slate-400">{selected.id.slice(0, 8)}…</span>
+            </div>
             <div>
               <div className="font-medium mb-2">{t.incidents.evidenceObjects}</div>
               {evidenceFiles.length === 0 ? (
@@ -232,7 +258,9 @@ export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: s
                     <Clock className="h-3 w-3" />{formatTime(inc.created_at)} · {meta.camera_id ?? '–'}
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="text-xs text-slate-500">{t.incidents.rule}: {meta.rule_triggered ?? '–'}</CardContent>
+                <CardContent className="text-xs text-slate-500">
+                  {t.incidents.rule}: {meta.rule_triggered ?? '–'}
+                </CardContent>
                 <CardFooter>
                   <Button variant="ghost" size="sm" className="gap-1 text-xs">
                     {t.incidents.viewDetail} <ChevronRight className="h-3 w-3" />

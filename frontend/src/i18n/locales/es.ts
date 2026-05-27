@@ -141,6 +141,7 @@ export const es = {
     validFrom: 'Válido desde',
     validUntil: 'Válido hasta',
     registerBtn: 'Registrar persona',
+    registerSuccess: 'registrada correctamente',
     registering: 'Registrando…',
     bufferFull: 'Buffer lleno · retoma un slot',
     captureFrame: 'Capturar frame',

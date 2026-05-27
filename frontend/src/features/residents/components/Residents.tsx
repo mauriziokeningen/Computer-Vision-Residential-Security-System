@@ -65,7 +65,7 @@ export function Residents({ query = '' }: { query?: string }) {
           valid_until: form.valid_until || null,
         }),
       });
-      setCreateSuccess(`✓ "${form.full_name}" ${t.residents.registerBtn}`);
+      setCreateSuccess(`✓ "${form.full_name}" ${t.residents.registerSuccess}`);
       setForm({ full_name: '', person_type: 'RESIDENT', building: '', apartment: '', phone: '', email: '', valid_from: '', valid_until: '' });
       load();
     } catch (e: any) {
