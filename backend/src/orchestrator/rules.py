@@ -94,7 +94,6 @@ class AnnotatedFrameBuffer:
         logger.info(f"Annotated frame listener online ({self._endpoint})")
 
     def _consume(self) -> None:
-        global _pending_evidences
         while True:
             try:
                 frame_bytes = self._sock.recv()
@@ -172,7 +171,7 @@ class WeaponDebouncer:
 
     Design notes:
         * Composite key includes class so a track that flips between
-          ``knife`` and ``pistol`` doesn't share confirmations across labels.
+          ``knife`` and pistol`` doesn't share confirmations across labels.
         * Sliding window is implemented as list pruning per observation, not
           as a periodic sweep — at ~10 FPS the per-call cost is negligible
           and avoids the complexity of a background thread.
