@@ -49,7 +49,7 @@ CAMERA_ID = os.getenv("CAMERA_ID", "main_camera")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parents[3]
-WEIGHTS_DIR = ROOT_DIR / "research" / "models" / "object_detection" / "weights"
+WEIGHTS_DIR = SCRIPT_DIR / "weights"
 COREML_WEIGHTS = WEIGHTS_DIR / "best2.mlpackage"
 PYTORCH_WEIGHTS = WEIGHTS_DIR / "best2.pt"
 

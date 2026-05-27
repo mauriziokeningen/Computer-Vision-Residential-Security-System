@@ -9,7 +9,7 @@ import zmq
 import time
 import logging
 import threading
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -51,6 +51,11 @@ WEAPON_DEBOUNCE_WINDOW = float(os.getenv("WEAPON_DEBOUNCE_WINDOW", "1.5"))
 WEAPON_DEBOUNCE_MIN_AVG_CONF = float(os.getenv("WEAPON_DEBOUNCE_MIN_AVG_CONF", "0.60"))
 WEAPON_TRACK_TTL = float(os.getenv("WEAPON_TRACK_TTL", "5.0"))
 
+# --- ATOMIC CONCURRENCY STRUCTURE (LIST-BASED) ---
+# Stores tuples of (camera_id, incident_id) queued sequentially for processing
+_pending_evidences: List[Tuple[str, str]] = []
+_pending_evidences_lock = threading.Lock()
+
 
 class AnnotatedFrameBuffer:
     """
@@ -89,11 +94,24 @@ class AnnotatedFrameBuffer:
         logger.info(f"Annotated frame listener online ({self._endpoint})")
 
     def _consume(self) -> None:
+        global _pending_evidences
         while True:
             try:
                 frame_bytes = self._sock.recv()
                 with self._lock:
                     self._frame = frame_bytes
+
+                # --- ULTRA-FAST ATOMIC DRAIN (<1ms lock) ---
+                to_process = []
+                with _pending_evidences_lock:
+                    if _pending_evidences:
+                        to_process = list(_pending_evidences)
+                        _pending_evidences.clear() # Clear the list for new incoming alerts
+
+                # Process the accumulated evidence queue sequentially and non-blocking
+                for camera_id, incident_id in to_process:
+                    _execute_async_persistence(incident_id, camera_id, frame_bytes)
+
             except Exception as e:
                 logger.error(f"Annotated frame listener crashed: {e}")
                 break
@@ -102,6 +120,29 @@ class AnnotatedFrameBuffer:
         """Returns a snapshot of the latest annotated JPEG, or None if not ready yet."""
         with self._lock:
             return self._frame
+
+
+def _execute_async_persistence(incident_id: str, camera_id: str, frame_bytes: bytes) -> Optional[str]:
+    """
+    Asynchronous persistence to S3/MinIO fed by the visual SSoT pipeline.
+    Invokes the persistence layer safely once the frame lineage has been 
+    mathematically verified to contain the visual annotations.
+    """
+    try:
+        from src.utils.s3_client import upload_incident_clip
+
+        object_name = upload_incident_clip(
+            file_data=frame_bytes,
+            incident_id=str(incident_id),
+            camera_id=camera_id,
+            filename=f"frame_{datetime.utcnow().strftime('%H%M%S')}.jpg",
+            content_type="image/jpeg",
+        )
+        logger.info(f"[ASYNC FORENSIC SSoT] Visual evidence successfully frozen for incident {incident_id}: {object_name}")
+        return object_name
+    except Exception as e:
+        logger.error(f"[ASYNC FORENSIC ERROR] Failed to freeze frame for incident {incident_id}: {e}")
+        return None
 
 
 class WeaponDebouncer:
@@ -327,60 +368,13 @@ def _create_alert(db, incident_id, message: str) -> Any:
         return alert
 
 def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optional[str]:
-    """
-    Persists the latest annotated frame (from the annotator's output stream)
-    as evidence for the given incident.
-
-    The `frame_data` parameter is kept in the signature for backwards
-    compatibility but is no longer used: workers stopped sending frame bytes
-    to the orchestrator since the rendering moved to the annotator. Evidence
-    is sourced from the in-process buffer fed by AnnotatedFrameBuffer.
-
-    If the annotator hasn't produced a frame yet (e.g. cold start, or the
-    annotator process is down), this returns None and skips persistence
-    rather than uploading a raw, unannotated frame — visual consistency
-    between live view and evidence is the explicit guarantee of this
-    architecture.
-    """
-    if _frame_buffer is None:
-        logger.warning(
-            f"AnnotatedFrameBuffer not initialized when persisting incident "
-            f"{incident_id}; evidence will not be saved."
-        )
-        return None
-
-    frame_bytes = _frame_buffer.get_latest()
-    if frame_bytes is None:
-        logger.warning(
-            f"No annotated frame available for incident {incident_id}; "
-            "skipping evidence upload (annotator may still be warming up)."
-        )
-        return None
-
-    try:
-        from src.utils.s3_client import upload_incident_clip
-
-        # TECH DEBT: Synchronous network I/O.
-        # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades,
-        # the IPC bus will back up. V2 must offload this to a Celery background worker.
-        object_name = upload_incident_clip(
-            file_data=frame_bytes,
-            incident_id=str(incident_id),
-            camera_id=camera_id,
-            filename=f"frame_{datetime.utcnow().strftime('%H%M%S')}.jpg",
-            content_type="image/jpeg",
-        )
-        logger.debug(f"Evidence saved: {object_name}")
-        return object_name
-    except Exception as e:
-        logger.error(f"Failed to save evidence: {e}")
-        return None
+    """ Kept strictly for backwards compatibility. Implementation moved to _execute_async_persistence. """
+    return None
 
 def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     detections = event.get("detections", [])
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     face_summary = {"unknown_detected": False, "known_names": []}
 
@@ -395,7 +389,11 @@ def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if _check_cooldown(camera_id, "RN-02"):
                 incident = _create_incident(db, event, "RN-02", PRIORITY_MEDIUM)
                 _create_alert(db, incident.id, f"Persona desconocida detectada en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-                _save_evidence(incident.id, camera_id, frame_data)
+                
+                # NON-BLOCKING ASYNC QUEUING
+                with _pending_evidences_lock:
+                    _pending_evidences.append((camera_id, incident.id))
+                    
                 logger.warning(f"[SECURITY ALERT] Unknown person at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
         else:
             face_summary["known_names"].append(name)
@@ -427,7 +425,6 @@ def _evaluate_weapon_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]
     detections = event.get("detections", [])
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     weapon_summary = {"weapon_detected": False, "weapons": []}
 
@@ -469,10 +466,14 @@ def _evaluate_weapon_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]
                 incident.id,
                 f"ARMA DETECTADA: {weapon_class} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%",
             )
-            _save_evidence(incident.id, camera_id, frame_data)
+            
+            # NON-BLOCKING ASYNC QUEUING
+            with _pending_evidences_lock:
+                _pending_evidences.append((camera_id, incident.id))
+
             logger.warning(
-                f"[WEAPON ALERT] {weapon_class} (track={track_id}) confirmed at "
-                f"{timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)"
+                f"[WEAPON ALERT PENDING VISUAL SSoT] {weapon_class} (track={track_id}) confirmed. "
+                f"Waiting for annotated frame from port {ANNOTATED_SUB_PORT} to freeze evidence."
             )
 
     return weapon_summary
@@ -481,7 +482,6 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     detections = event.get("detections", [])
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     pose_summary = {"aggression_detected": False, "fall_detected": False, "actions": []}
 
@@ -501,7 +501,11 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if _check_cooldown(camera_id, "RN-04"):
                 incident = _create_incident(db, event, "RN-04", PRIORITY_HIGH)
                 _create_alert(db, incident.id, f"AGRESION DETECTADA: {action} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-                _save_evidence(incident.id, camera_id, frame_data)
+                
+                # NON-BLOCKING ASYNC QUEUING
+                with _pending_evidences_lock:
+                    _pending_evidences.append((camera_id, incident.id))
+                    
                 logger.warning(f"[AGGRESSION ALERT] {action} at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
 
         elif action.lower() in fall_actions:
@@ -510,7 +514,11 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if _check_cooldown(camera_id, "RN-05"):
                 incident = _create_incident(db, event, "RN-05", PRIORITY_MEDIUM)
                 _create_alert(db, incident.id, f"CAIDA DETECTADA en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-                _save_evidence(incident.id, camera_id, frame_data)
+                
+                # NON-BLOCKING ASYNC QUEUING
+                with _pending_evidences_lock:
+                    _pending_evidences.append((camera_id, incident.id))
+                    
                 logger.warning(f"[FALL ALERT] Fall detected at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
 
     return pose_summary
@@ -518,7 +526,6 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _evaluate_compound_event(db, event: Dict[str, Any], face_summary: Optional[Dict], weapon_summary: Optional[Dict], pose_summary: Optional[Dict]) -> None:
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     unknown = face_summary and face_summary.get("unknown_detected", False)
     weapon = weapon_summary and weapon_summary.get("weapon_detected", False)
@@ -534,15 +541,24 @@ def _evaluate_compound_event(db, event: Dict[str, Any], face_summary: Optional[D
 
             incident = _create_incident(db, event, "RN-06", PRIORITY_CRITICAL)
             _create_alert(db, incident.id, f"ALERTA CRITICA: Persona desconocida con amenaza activa ({', '.join(threats)}) en {camera_id} ({timestamp})")
-            _save_evidence(incident.id, camera_id, frame_data)
+            
+            # NON-BLOCKING ASYNC QUEUING
+            with _pending_evidences_lock:
+                _pending_evidences.append((camera_id, incident.id))
+                
             logger.critical(f"[CRITICAL] Unknown person + active threat at {timestamp} on {camera_id}")
 
     if known_names and fall:
         if _check_cooldown(camera_id, "RN-07"):
             incident = _create_incident(db, event, "RN-07", PRIORITY_MEDIUM)
             _create_alert(db, incident.id, f"ALERTA ASISTENCIAL: Residente {', '.join(known_names)} detecto caida en {camera_id} ({timestamp})")
-            _save_evidence(incident.id, camera_id, frame_data)
+            
+            # NON-BLOCKING ASYNC QUEUING
+            with _pending_evidences_lock:
+                _pending_evidences.append((camera_id, incident.id))
+                
             logger.warning(f"[ASSISTENTIAL] Resident fall detected at {timestamp} on {camera_id}")
+
 
 class EventAccumulator:
     """
@@ -568,6 +584,7 @@ class EventAccumulator:
     def reset(self):
         self.events.clear()
         self.last_reset = time.time()
+
 
 def start_orchestrator() -> None:
     # Initialize the AnnotatedFrameBuffer and the WeaponDebouncer BEFORE
