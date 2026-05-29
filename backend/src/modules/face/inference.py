@@ -120,6 +120,18 @@ def start_face_model() -> None:
         within an ASGI event loop.
     """
     context = zmq.Context()
+
+    logger.info("Initializing FaceProcessorService (InsightFace)...")
+    try:
+        # Instantiating the AI service dynamically claims VRAM. 
+        # Failure here indicates hardware resource exhaustion or missing CUDA libraries.
+
+        ai_service = FaceProcessorService()
+        logger.info("Face module loaded into VRAM. Listening for video stream...")
+    except Exception as e:
+        logger.critical(f"FATAL: Could not load AI models into memory: {e}")
+        return
+
     # Establish read-only ingestion pipeline
     video_receiver = context.socket(zmq.SUB)
     video_receiver.connect(VIDEO_SUB_PORT)
@@ -133,17 +145,7 @@ def start_face_model() -> None:
     annotator_publisher = context.socket(zmq.PUB)
     annotator_publisher.connect(ANNOTATOR_PUB_PORT)
 
-    logger.info("Initializing FaceProcessorService (InsightFace)...")
-    try:
-        # Instantiating the AI service dynamically claims VRAM. 
-        # Failure here indicates hardware resource exhaustion or missing CUDA libraries.
-
-        ai_service = FaceProcessorService()
-        logger.info("Face module loaded into VRAM. Listening for video stream...")
-    except Exception as e:
-        logger.critical(f"FATAL: Could not load AI models into memory: {e}")
-        return
-
+    logger.info("Face module online and synchronized. Enterring polling loop...")
     # Aggregated counter for decode failures so we can surface persistent
     # corruption without flooding the journal on a single bad packet.
     decode_failures = 0
@@ -152,6 +154,14 @@ def start_face_model() -> None:
         try:
             frame_bytes = video_receiver.recv()
             frame = _decode_frame(frame_bytes)
+
+            t0 = time.time() 
+            faces = ai_service.app.get(frame)
+            infer_ms = (time.time() - t0) * 1000.0 
+
+            if faces:
+                logger.info(f"🏀 [FACE INFERENCE] Processed frame. infer={infer_ms:.0f}ms")
+
             if frame is None:
                 decode_failures += 1
                 # Log every 30th failure to flag persistent issues without
