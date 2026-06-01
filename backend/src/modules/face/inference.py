@@ -31,6 +31,7 @@ import numpy as np
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 from sqlalchemy import text
+from src.database.models import Person
 
 from src.services.face_processor import FaceProcessorService
 from src.database.session import SessionLocal
@@ -51,7 +52,7 @@ CAMERA_ID = os.getenv("CAMERA_ID", "main_camera")
 # (0.0 is a mathematically perfect match, 1.0 is completely orthogonal).
 # A threshold of 0.40 guarantees a >60% mathematical similarity, aggressively minimizing 
 # false positives at the risk of slightly higher false negatives (which is preferable in physical security).
-MAX_ALLOWED_DISTANCE = float(os.getenv("FACE_MAX_ALLOWED_DISTANCE", "0.40"))
+MAX_ALLOWED_DISTANCE = float(os.getenv("FACE_MAX_ALLOWED_DISTANCE", "0.61"))
 
 
 def _decode_frame(frame_bytes: bytes) -> Optional[np.ndarray]:
@@ -76,38 +77,44 @@ def _decode_frame(frame_bytes: bytes) -> Optional[np.ndarray]:
 def _find_closest_match_in_db(embedding: np.ndarray) -> Tuple[str, float]:
     """
     Executes a high-speed nearest-neighbor search against the PostgreSQL vector index.
-
-    Args:
-        embedding (np.ndarray): The 512-dimensional L2-normalized face vector.
-
-    Returns:
-        Tuple[str, float]: The database identifier (name) and the calculated cosine distance.
-                           Returns "unknown_person" if the distance exceeds the security threshold.
+    Optimized for zero-copy memory and minimal network I/O.
     """
+
     db = SessionLocal()
     try:
         vector_list = embedding.tolist()
-          # Native SQL utilizing the pgvector <=> operator forces the database engine 
-        # to execute the nearest-neighbor calculation, keeping the Python worker stateless.
-        query = text("""
-            SELECT full_name, (face_embedding <=> :vector) AS distance
-            FROM persons
-            WHERE face_embedding IS NOT NULL
-            ORDER BY distance ASC
-            LIMIT 1;
-        """)
-        result = db.execute(query, {"vector": str(vector_list)}).fetchone()
+
+        #1. Configuration of hyperparameter HNSW for this transaction (Latency Optimization)
+        db.execute(text("SET LOCAL hnsw.ef_search = 32;"))
+
+        #2. Define the calculated distance column
+        #This let us extract the calculation that PostgreSQL already did, avoiding recalculating in Python.
+        distance_col = Person.face_embedding.cosine_distance(vector_list).label("distance")
+        
+        #3. Strict Projection: We only extract the name and the distance.
+        #We never bring the 512D vector back by the network in the critical route.
+        result = db.query(Person.full_name, distance_col)\
+            .filter(Person.face_embedding.is_not(None))\
+            .order_by(distance_col)\
+            .limit(1)\
+            .first()
+        
         if result:
-            name, distance = result
-            # Strict security gate enforcement
+            full_name, distance = result
+
+            #Strict validation of the security Gatekeeper
             if distance <= MAX_ALLOWED_DISTANCE:
-                return name, float(distance)
+                return full_name, float(distance)
             return "unknown_person", float(distance)
+        
         return "unknown_person", 1.0
+    
     except Exception as e:
         logger.error(f"Database vector search failed: {e}")
         return "unknown_person", 1.0
     finally:
+        # This does an implicit rollback in the transaction
+        # Cleaning the "SET LOCAL" securely for the connections pool
         db.close()
 
 

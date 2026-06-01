@@ -61,3 +61,13 @@ CREATE TABLE alerts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP
 );
+
+-- ==============================================================================
+-- 4. VECTOR INDEX (HNSW)
+-- ==============================================================================
+
+-- Este índice convierte la búsqueda lineal (O(N)) en búsqueda logarítmica (O(log N))
+CREATE INDEX IF NOT EXISTS idx_persons_face_embedding_hnsw
+ON persons
+USING hnsw (face_embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
