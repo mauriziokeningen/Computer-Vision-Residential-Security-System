@@ -1,11 +1,11 @@
 -- ==============================================================================
--- 1. EXTENSIONES DEL SISTEMA
+-- 1. SYSTEM EXTENSIONS
 -- ==============================================================================
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ==============================================================================
--- 2. TABLAS PADRE (Entidades Independientes)
+-- 2. CORE / PARENT TABLES (Independent Entities)
 -- ==============================================================================
 
 CREATE TABLE persons (
@@ -36,7 +36,7 @@ CREATE TABLE incidents (
 );
 
 -- ==============================================================================
--- 3. TABLAS HIJO (Relaciones, Evidencia y Frontend)
+-- 3. DEPENDENT / CHILD TABLES (Relationships, Evidence, and System Actions)
 -- ==============================================================================
 
 CREATE TABLE incident_timeline (
@@ -63,10 +63,11 @@ CREATE TABLE alerts (
 );
 
 -- ==============================================================================
--- 4. VECTOR INDEX (HNSW)
+-- 4. HIGH-PERFORMANCE VECTOR INDEXING (HNSW)
 -- ==============================================================================
 
--- Este índice convierte la búsqueda lineal (O(N)) en búsqueda logarítmica (O(log N))
+-- Converts the computational complexity of biometric verification from a linear 
+-- sequential scan O(N) into an Approximate Nearest Neighbor logarithmic search O(log N).
 CREATE INDEX IF NOT EXISTS idx_persons_face_embedding_hnsw
 ON persons
 USING hnsw (face_embedding vector_cosine_ops)
