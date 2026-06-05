@@ -8,7 +8,6 @@ import cv2
 import zmq
 import time
 import logging
-import platform
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("VideoIngestion")
@@ -40,15 +39,10 @@ def start_ingestion() -> None:
         logger.error(f"Could not bind to port {PUBLISHER_PORT}: {e}. Is another process running?")
         return
 
-    # TECH DEBT: cv2.VideoCapture is synchronous and blocking...
-    if platform.system() == "Darwin":
-        # Apple Silicon / Mac Optimization: Force native AVFoundation backend
-        cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_AVFOUNDATION)
-    else:
-        cap = cv2.VideoCapture(CAMERA_SOURCE)
-        
-    # Ask the OS to offload MJPEG decoding to hardware if supported
-    cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
+    # TECH DEBT: cv2.VideoCapture is synchronous and blocking. 
+    # If scaling to multi-camera (>4 feeds), this module must be refactored to use 
+    # asynchronous GStreamer pipelines or dedicated multiprocessing queues to avoid GIL bottlenecks.
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
     
     if not cap.isOpened():
         logger.error(f"FATAL: Could not open camera source {CAMERA_SOURCE}. "

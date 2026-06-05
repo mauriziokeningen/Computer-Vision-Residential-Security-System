@@ -1,38 +1,30 @@
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
-import platform
 
 class FaceProcessorService:
     def __init__(self):
         """
         Initializes the RetinaFace and ArcFace models via InsightFace.
-        Loads the 'buffalo_l' model pack into memory with Apple Silicon / CUDA routing.
+        Loads the 'buffalo_l' model pack into memory.
         """
         print("[AI] Initializing FaceProcessorService...")
 
-        is_apple_silicon = platform.system() == "Darwin" and platform.machine() == "arm64"
+        # RUNTIME GRAPH OPTIMIZATION: We prepare the models immediately to avoid latency during the first inference call.
+        cuda_options = {
+            "cudnn_conv_algo_search": "DEFAULT",
+            "arena_extend_strategy": "kNextPowerOfTwo"
+        }
 
-        # SOTA: Dynamic Hardware Routing
-        if is_apple_silicon:
-            providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
-            provider_options = [{}, {}] # CoreML doesn't need CUDA kwargs
-            print("[AI] Apple Silicon detected. Routing Face models to Neural Engine (CoreML).")
-        else:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            cuda_options = {
-                "cudnn_conv_algo_search": "DEFAULT",
-                "arena_extend_strategy": "kNextPowerOfTwo"
-            }
-            provider_options = [cuda_options, {}]
-            print("[AI] Standard host detected. Routing Face models to CUDA/CPU.")
-
+        # Initialize the FaceAnalysis app. 
+        # Note: The first time this runs, it will download ~330MB of models into ~/.insightface/models/
         self.app = FaceAnalysis(
             name='buffalo_l', 
             allowed_modules=['detection', 'recognition'],
-            providers=providers,
-            provider_options=provider_options
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+            provider_options=[cuda_options, {}]
         )
+        
         
         # Prepare the execution environment
         # ctx_id=0 attempts to use the first GPU (CUDA). ctx_id=-1 forces CPU.
