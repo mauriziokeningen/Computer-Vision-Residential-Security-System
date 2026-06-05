@@ -19,6 +19,7 @@ from typing import Optional
 
 import mediapipe as mp
 import onnxruntime as ort
+import platform
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("PoseInference")
@@ -81,7 +82,13 @@ def start_pose_model() -> None:
         return
 
     logger.info(f"Loading ST-GCN ONNX model: {ONNX_WEIGHTS}")
-    ort_session = ort.InferenceSession(str(ONNX_WEIGHTS), providers=['CPUExecutionProvider'])
+    
+    is_apple_silicon = platform.system() == "Darwin" and platform.machine() == "arm64"
+    providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider'] if is_apple_silicon else ['CUDAExecutionProvider', 'CPUExecutionProvider']
+    
+    ort_session = ort.InferenceSession(str(ONNX_WEIGHTS), providers=providers)
+    if is_apple_silicon:
+        logger.info("ST-GCN successfully bound to Apple Neural Engine (CoreML).")
     
     mp_pose = mp.solutions.pose
     pose_estimator = mp_pose.Pose(model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
