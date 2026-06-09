@@ -15,14 +15,14 @@ import { useLanguage } from '../../../i18n/LanguageContext';
 const POSE_HINTS = ['Front', 'Left', 'Right'] as const;
 
 export function Residents({ query = '' }: { query?: string }) {
-  const { t } = useLanguage();
+  const { t, locale } = useLanguage();
 
   const [persons, setPersons] = useState<ApiPerson[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  const [createSuccess, setCreateSuccess] = useState('');
+  const [createdName, setCreatedName] = useState('');
   const [form, setForm] = useState({
     full_name: '', person_type: 'RESIDENT', building: '',
     apartment: '', phone: '', email: '', valid_from: '', valid_until: '',
@@ -30,7 +30,7 @@ export function Residents({ query = '' }: { query?: string }) {
   const [enrollSlots, setEnrollSlots] = useState<(File | null)[]>([null, null, null]);
   const [enrollTarget, setEnrollTarget] = useState<string | null>(null);
   const [enrolling, setEnrolling] = useState(false);
-  const [enrollMsg, setEnrollMsg] = useState('');
+  const [enrollSuccess, setEnrollSuccess] = useState(false);
   const [enrollError, setEnrollError] = useState('');
   const [isCapturing, setIsCapturing] = useState(false);
   const [captureMode, setCaptureMode] = useState<'upload' | 'camera'>('upload');
@@ -50,7 +50,7 @@ export function Residents({ query = '' }: { query?: string }) {
     if (!form.full_name.trim()) return;
     setCreating(true);
     setCreateError('');
-    setCreateSuccess('');
+    setCreatedName('');
     try {
       await apiFetch('/persons/', {
         method: 'POST',
@@ -65,7 +65,7 @@ export function Residents({ query = '' }: { query?: string }) {
           valid_until: form.valid_until || null,
         }),
       });
-      setCreateSuccess(`✓ "${form.full_name}" ${t.residents.registerSuccess}`);
+      setCreatedName(form.full_name.trim());
       setForm({ full_name: '', person_type: 'RESIDENT', building: '', apartment: '', phone: '', email: '', valid_from: '', valid_until: '' });
       load();
     } catch (e: any) {
@@ -109,7 +109,7 @@ export function Residents({ query = '' }: { query?: string }) {
     const validFiles = enrollSlots.filter(Boolean) as File[];
     if (validFiles.length !== 3) { setEnrollError('Exactly 3 facial images are required.'); return; }
     setEnrolling(true);
-    setEnrollMsg('');
+    setEnrollSuccess(false);
     setEnrollError('');
     const fd = new FormData();
     validFiles.forEach((file) => fd.append('files', file));
@@ -117,7 +117,7 @@ export function Residents({ query = '' }: { query?: string }) {
       const res = await fetch(`/api/persons/${personId}/enroll`, { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
-      setEnrollMsg(data.message ?? 'Enrolamiento exitoso');
+      setEnrollSuccess(true);
       load();
     } catch (e: any) {
       setEnrollError(`Error: ${e.message}`);
@@ -147,6 +147,15 @@ export function Residents({ query = '' }: { query?: string }) {
     ? t.residents.turnLeft
     : t.residents.turnRight;
 
+  // Mensajes de banner construidos dinámicamente según locale activo
+  const enrollSuccessMsg = locale === 'es'
+    ? 'Perfil biométrico generado y vinculado correctamente.'
+    : 'Biometric profile successfully generated and linked.';
+
+  const createSuccessMsg = createdName
+    ? `✓ "${createdName}" ${t.residents.registerSuccess}`
+    : '';
+
   return (
     <div className="space-y-4">
       <Card>
@@ -160,7 +169,7 @@ export function Residents({ query = '' }: { query?: string }) {
           <div className="space-y-3">
             <Label>{t.residents.registeredLabel}</Label>
             {loadError && <ErrorBanner msg={loadError} onClose={() => setLoadError('')} />}
-            {enrollMsg && <SuccessBanner msg={enrollMsg} onClose={() => setEnrollMsg('')} />}
+            {enrollSuccess && <SuccessBanner msg={enrollSuccessMsg} onClose={() => setEnrollSuccess(false)} />}
             {enrollError && <ErrorBanner msg={enrollError} onClose={() => setEnrollError('')} />}
 
             {loading ? (
@@ -195,7 +204,7 @@ export function Residents({ query = '' }: { query?: string }) {
                         <Button size="sm" variant="outline" onClick={() => {
                           setEnrollTarget(person.id);
                           setEnrollSlots([null, null, null]);
-                          setEnrollMsg('');
+                          setEnrollSuccess(false);
                           setEnrollError('');
                         }}>
                           {t.residents.enroll}
@@ -304,7 +313,7 @@ export function Residents({ query = '' }: { query?: string }) {
           <div className="space-y-3">
             <Label>{t.residents.registerLabel}</Label>
             {createError && <ErrorBanner msg={createError} onClose={() => setCreateError('')} />}
-            {createSuccess && <SuccessBanner msg={createSuccess} onClose={() => setCreateSuccess('')} />}
+            {createdName && <SuccessBanner msg={createSuccessMsg} onClose={() => setCreatedName('')} />}
 
             <div>
               <Label className="text-xs text-slate-500">{t.residents.fullName}</Label>
