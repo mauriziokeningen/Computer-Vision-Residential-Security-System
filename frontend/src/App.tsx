@@ -1,16 +1,3 @@
-/**
- * @module SecurityDashboardRouter
- *
- * Root routing layer. Following the Feature-Sliced Design refactor,
- * App.tsx is reduced to its minimum responsibility: map the active tab
- * to a Page component, and wire the global alert WebSocket state into
- * the SidebarLayout.
- *
- * All API/network logic lives in src/api, all domain UI lives in
- * src/features, and the real-time WebSocket orchestration lives in
- * src/hooks/useAlertWebSocket.
- */
-
 import React, { useState, useEffect } from 'react';
 import { SidebarLayout, TabId } from './layouts/SidebarLayout';
 import { useAlertWebSocket } from './hooks/useAlertWebSocket';
@@ -46,7 +33,7 @@ export default function App() {
       wsConnected={isConnected}
     >
       {tab === 'dashboard' && <DashboardPage alertCounts={alertCounts} />}
-      {tab === 'live' && <LiveMonitoringPage />}
+      {tab === 'live' && <LiveMonitoringPage lastIncidentEvent={lastIncidentEvent} />}
       {tab === 'alerts' && <AlertsPage query={searchQuery} />}
       {tab === 'incidents' && <IncidentsPage query={searchQuery} lastIncidentEvent={lastIncidentEvent} />}
       {tab === 'residents' && <ResidentsPage query={searchQuery} />}
