@@ -9,17 +9,36 @@ class FaceProcessorService:
         Loads the 'buffalo_l' model pack into memory.
         """
         print("[AI] Initializing FaceProcessorService...")
-        
+
+        # RUNTIME GRAPH OPTIMIZATION: We prepare the models immediately to avoid latency during the first inference call.
+        cuda_options = {
+            "cudnn_conv_algo_search": "DEFAULT",
+            "arena_extend_strategy": "kNextPowerOfTwo"
+        }
+
         # Initialize the FaceAnalysis app. 
         # Note: The first time this runs, it will download ~330MB of models into ~/.insightface/models/
-        self.app = FaceAnalysis(name='buffalo_l')
+        self.app = FaceAnalysis(
+            name='buffalo_l', 
+            allowed_modules=['detection', 'recognition'],
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+            provider_options=[cuda_options, {}]
+        )
+        
         
         # Prepare the execution environment
         # ctx_id=0 attempts to use the first GPU (CUDA). ctx_id=-1 forces CPU.
         # det_size=(640, 640) is the standard input resolution for RetinaFace.
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        self.app.prepare(
+            ctx_id=0, 
+            det_size=(320, 320),
+        )
         
         print("[AI] Face models loaded into memory successfully.")
+        dummy_frame = np.zeros((320, 320, 3), dtype=np.uint8) # A black image to warm up the GPU and trigger any lazy initialization in the models.
+        self.app.get(dummy_frame)  # Warmup pass to trigger any lazy initialization
+        
+        print("[AI] Face models loaded and GPU graphs compiled successfully.")
 
     def extract_face_embedding(self, image_bytes: bytes) -> np.ndarray:
         """

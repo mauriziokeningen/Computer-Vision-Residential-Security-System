@@ -49,7 +49,7 @@ ANNOTATED_PUB_PORT = os.getenv("ANNOTATED_PUB_PORT", "tcp://127.0.0.1:5557")    
 # At ~20 FPS inference on weapons + ~30 FPS on face, 0.5s comfortably covers the
 # next inference cycle from the slowest module. Tuned downward will cause flicker;
 # tuned upward will leave stale boxes lingering when objects exit the scene.
-DEFAULT_DETECTION_TTL_SECONDS = float(os.getenv("ANNOTATOR_TTL_SECONDS", "0.5"))
+DEFAULT_DETECTION_TTL_SECONDS = float(os.getenv("ANNOTATOR_TTL_SECONDS", "0.12"))
 
 # JPEG quality for the republished annotated frame. Matches the workers' previous
 # evidence quality (75) so that the live feed and stored evidence are visually

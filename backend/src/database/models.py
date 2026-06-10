@@ -3,7 +3,7 @@ SQLAlchemy ORM models for the Residential Security System.
 Maps database tables to Python classes.
 """
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -37,6 +37,16 @@ class Person(Base):
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     face_embedding = Column(Vector(512), nullable=True)
+
+    __table_args__ = (
+        Index(
+            'idx_persons_face_embedding_hnsw',
+            'face_embedding',
+            postgresql_using='hnsw',
+            postgresql_with={'m': 16, 'ef_construction': 64},
+            postgresql_ops={'face_embedding': 'vector_cosine_ops'}
+        ),
+    )
 
 
 # --- INCIDENT MODEL ---

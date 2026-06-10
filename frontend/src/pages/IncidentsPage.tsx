@@ -1,7 +1,6 @@
 import React from 'react';
 import { IncidentsList } from '../features/incidents/components/IncidentsList';
 
-export default function IncidentsPage({ query = '' }: { query?: string }) {
-  return <IncidentsList query={query} />;
+export default function IncidentsPage({ query = '', lastIncidentEvent = 0 }: { query?: string; lastIncidentEvent?: number }) {
+  return <IncidentsList query={query} lastIncidentEvent={lastIncidentEvent} />;
 }
-

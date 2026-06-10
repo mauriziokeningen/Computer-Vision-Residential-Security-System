@@ -1,68 +1,54 @@
 import React from 'react';
 import {
-  AlertTriangle,
-  Bell,
-  Camera,
-  DoorOpen,
-  Gauge,
-  ListChecks,
-  Settings,
-  Siren,
-  Users,
-  Search,
+  AlertTriangle, Bell, Camera, DoorOpen, Gauge,
+  ListChecks, Settings, Siren, Users, Search,
 } from 'lucide-react';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
+  Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { AlertCounts } from '../types';
+import { useLanguage } from '../i18n/LanguageContext';
+import { LanguageToggle } from '../i18n/LanguageToggle';
 
 export type TabId =
-  | 'dashboard'
-  | 'live'
-  | 'alerts'
-  | 'incidents'
-  | 'residents'
-  | 'access'
-  | 'settings';
+  | 'dashboard' | 'live' | 'alerts' | 'incidents'
+  | 'residents' | 'access' | 'settings';
 
 function Header({
-  unreadCount,
-  searchQuery,
-  onSearchChange,
-  onOpenAlerts,
+  unreadCount, searchQuery, onSearchChange, onOpenAlerts,
 }: {
   unreadCount: number;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onOpenAlerts: () => void;
 }) {
+  const { t } = useLanguage();
+
   return (
     <div className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
       <div className="flex items-center gap-3">
         <Siren className="h-7 w-7" />
         <div>
-          <h1 className="text-xl font-semibold leading-none">Seguridad UH · Panel</h1>
-          <p className="text-sm text-slate-500">Monitoreo en tiempo real · TT2</p>
+          <h1 className="text-xl font-semibold leading-none">{t.header.title}</h1>
+          <p className="text-sm text-slate-500">{t.header.subtitle}</p>
         </div>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <LanguageToggle />
         <div className="relative min-w-[260px]">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <Input
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Buscar alertas, incidentes o personas"
+            placeholder={t.header.searchPlaceholder}
             className="pl-9"
           />
         </div>
         <Button onClick={onOpenAlerts} className="gap-2 relative">
-          <Bell className="h-4 w-4" />Notificaciones
+          <Bell className="h-4 w-4" />
+          {t.header.notifications}
           {unreadCount > 0 && (
             <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">
               {unreadCount > 9 ? '9+' : unreadCount}
@@ -75,13 +61,7 @@ function Header({
 }
 
 export function SidebarLayout({
-  tab,
-  setTab,
-  searchQuery,
-  setSearchQuery,
-  alertCounts,
-  wsConnected,
-  children,
+  tab, setTab, searchQuery, setSearchQuery, alertCounts, wsConnected, children,
 }: {
   tab: TabId;
   setTab: (t: TabId) => void;
@@ -91,6 +71,18 @@ export function SidebarLayout({
   wsConnected: boolean;
   children: React.ReactNode;
 }) {
+  const { t } = useLanguage();
+
+  const NAV_ITEMS = [
+    { id: 'dashboard', icon: Gauge,         label: t.nav.dashboard },
+    { id: 'live',      icon: Camera,        label: t.nav.live },
+    { id: 'alerts',    icon: AlertTriangle, label: t.nav.alerts,    badge: alertCounts.unread },
+    { id: 'incidents', icon: ListChecks,    label: t.nav.incidents },
+    { id: 'residents', icon: Users,         label: t.nav.residents },
+    { id: 'access',    icon: DoorOpen,      label: t.nav.access },
+    { id: 'settings',  icon: Settings,      label: t.nav.settings },
+  ] as const;
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
       <div className="max-w-7xl mx-auto p-4">
@@ -103,27 +95,19 @@ export function SidebarLayout({
 
         <div className="flex items-center gap-2 mb-3 text-xs text-slate-500">
           <div className={`h-2 w-2 rounded-full ${wsConnected ? 'bg-emerald-500' : 'bg-red-400'}`} />
-          {wsConnected ? 'Backend connected in real time' : 'No real-time backend connection available'}
+          {wsConnected ? t.ws.connected : t.ws.disconnected}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
           <div className="hidden lg:block">
             <Card className="sticky top-4">
               <CardHeader>
-                <CardTitle className="text-base">Navegación</CardTitle>
-                <CardDescription>Secciones del sistema</CardDescription>
+                <CardTitle className="text-base">{t.nav.navigation}</CardTitle>
+                <CardDescription>{t.nav.sections}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
                 <nav className="grid gap-1">
-                  {[
-                    { id: 'dashboard', icon: Gauge, label: 'Dashboard' },
-                    { id: 'live', icon: Camera, label: 'Monitoreo en vivo' },
-                    { id: 'alerts', icon: AlertTriangle, label: 'Alertas', badge: alertCounts.unread },
-                    { id: 'incidents', icon: ListChecks, label: 'Incidentes' },
-                    { id: 'residents', icon: Users, label: 'Residentes' },
-                    { id: 'access', icon: DoorOpen, label: 'Control de Acceso' },
-                    { id: 'settings', icon: Settings, label: 'Configuración' },
-                  ].map((it) => (
+                  {NAV_ITEMS.map((it) => (
                     <Button
                       key={it.id}
                       variant={tab === it.id ? 'secondary' : 'ghost'}
@@ -132,7 +116,7 @@ export function SidebarLayout({
                     >
                       <it.icon className="h-4 w-4" />
                       {it.label}
-                      {it.badge && it.badge > 0 ? (
+                      {'badge' in it && it.badge && it.badge > 0 ? (
                         <span className="ml-auto bg-red-500 text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">
                           {it.badge > 9 ? '9+' : it.badge}
                         </span>
@@ -150,4 +134,3 @@ export function SidebarLayout({
     </div>
   );
 }
-
