@@ -30,8 +30,7 @@ export default function App() {
   });
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Custom hook manages WebSocket connection + global alert counts.
-  const { alertCounts, isConnected } = useAlertWebSocket();
+  const { alertCounts, isConnected, lastIncidentEvent } = useAlertWebSocket();
 
   useEffect(() => {
     window.localStorage.setItem('uh_security_active_tab', tab);
@@ -49,11 +48,10 @@ export default function App() {
       {tab === 'dashboard' && <DashboardPage alertCounts={alertCounts} />}
       {tab === 'live' && <LiveMonitoringPage />}
       {tab === 'alerts' && <AlertsPage query={searchQuery} />}
-      {tab === 'incidents' && <IncidentsPage query={searchQuery} />}
+      {tab === 'incidents' && <IncidentsPage query={searchQuery} lastIncidentEvent={lastIncidentEvent} />}
       {tab === 'residents' && <ResidentsPage query={searchQuery} />}
       {tab === 'access' && <AccessPage onRegisterVisitor={() => setTab('residents')} />}
       {tab === 'settings' && <SettingsPage />}
     </SidebarLayout>
   );
 }
-

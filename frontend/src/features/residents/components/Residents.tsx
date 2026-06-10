@@ -152,8 +152,11 @@ export function Residents({ query = '' }: { query?: string }) {
     ? 'Perfil biométrico generado y vinculado correctamente.'
     : 'Biometric profile successfully generated and linked.';
 
+  // REEMPLÁZALO POR ESTO (Hotfix seguro):
   const createSuccessMsg = createdName
-    ? `✓ "${createdName}" ${t.residents.registerSuccess}`
+    ? locale === 'es'
+      ? `✓ "${createdName}" registrada correctamente`
+      : `✓ "${createdName}" registered successfully`
     : '';
 
   return (

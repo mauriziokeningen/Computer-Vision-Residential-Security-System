@@ -181,4 +181,8 @@ export const es = {
   },
 } as const;
 
-export type Dictionary = typeof es;
+type SuffixValuesToString<T> = {
+  [K in keyof T]: T[K] extends object ? SuffixValuesToString<T[K]> : string;
+};
+
+export type Dictionary = SuffixValuesToString<typeof es>;

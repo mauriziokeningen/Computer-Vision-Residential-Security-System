@@ -135,9 +135,7 @@ export function IncidentsList({ query = '', lastIncidentEvent = 0 }: { query?: s
                 <img src={evidenceUrl} alt="evidence" className="h-full w-full object-contain" />
               </div>
             ) : evidenceUrl && isVideo ? (
-              <div className="aspect-video rounded-xl border overflow-hidden bg-black">
-                <video src={evidenceUrl} controls className="h-full w-full object-contain" />
-              </div>
+              <div className="aspect-video rounded-xl border overflow-hidden bg-black"><video src={evidenceUrl} controls className="h-full w-full object-contain" /></div>
             ) : (
               <div className="aspect-video rounded-xl border border-dashed bg-slate-50 grid place-items-center text-slate-500 p-6 text-center">
                 <div className="space-y-2">
