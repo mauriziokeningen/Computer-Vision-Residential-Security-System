@@ -9,7 +9,7 @@ import zmq
 import time
 import logging
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -41,6 +41,20 @@ COMPOUND_EVENT_WINDOW_SECONDS = float(os.getenv("COMPOUND_EVENT_WINDOW_SECONDS",
 # orchestrator and the FastAPI host can be deployed on different machines.
 ALERT_API_URL = os.getenv("ALERT_API_URL", "http://127.0.0.1:8000/api/alerts/")
 ALERT_API_TIMEOUT_SECONDS = float(os.getenv("ALERT_API_TIMEOUT_SECONDS", "2.0"))
+
+# Weapon debouncer tuning. Defaults assume ~7-8 FPS effective worker throughput
+# (CoreML on M-series with a single camera). At that rate, 5 hits in a 1.5s
+# window correspond to ~0.7s of sustained detection — long enough to outlast
+# a single-frame flicker, short enough to keep alert latency well under 1s.
+WEAPON_DEBOUNCE_HITS = int(os.getenv("WEAPON_DEBOUNCE_HITS", "5"))
+WEAPON_DEBOUNCE_WINDOW = float(os.getenv("WEAPON_DEBOUNCE_WINDOW", "1.5"))
+WEAPON_DEBOUNCE_MIN_AVG_CONF = float(os.getenv("WEAPON_DEBOUNCE_MIN_AVG_CONF", "0.60"))
+WEAPON_TRACK_TTL = float(os.getenv("WEAPON_TRACK_TTL", "5.0"))
+
+# --- ATOMIC CONCURRENCY STRUCTURE (LIST-BASED) ---
+# Stores tuples of (camera_id, incident_id) queued sequentially for processing
+_pending_evidences: List[Tuple[str, str]] = []
+_pending_evidences_lock = threading.Lock()
 
 
 class AnnotatedFrameBuffer:
@@ -85,6 +99,18 @@ class AnnotatedFrameBuffer:
                 frame_bytes = self._sock.recv()
                 with self._lock:
                     self._frame = frame_bytes
+
+                # --- ULTRA-FAST ATOMIC DRAIN (<1ms lock) ---
+                to_process = []
+                with _pending_evidences_lock:
+                    if _pending_evidences:
+                        to_process = list(_pending_evidences)
+                        _pending_evidences.clear() # Clear the list for new incoming alerts
+
+                # Process the accumulated evidence queue sequentially and non-blocking
+                for camera_id, incident_id in to_process:
+                    _execute_async_persistence(incident_id, camera_id, frame_bytes)
+
             except Exception as e:
                 logger.error(f"Annotated frame listener crashed: {e}")
                 break
@@ -95,10 +121,161 @@ class AnnotatedFrameBuffer:
             return self._frame
 
 
-# Module-level singleton, populated when start_orchestrator() runs. Kept as a
-# module attribute (not a true global mutable) so the helper functions
-# (_save_evidence, etc.) can access it without threading every signature.
+def _execute_async_persistence(incident_id: str, camera_id: str, frame_bytes: bytes) -> Optional[str]:
+    """
+    Asynchronous persistence to S3/MinIO fed by the visual SSoT pipeline.
+    Invokes the persistence layer safely once the frame lineage has been 
+    mathematically verified to contain the visual annotations.
+    """
+    try:
+        from src.utils.s3_client import upload_incident_clip
+
+        object_name = upload_incident_clip(
+            file_data=frame_bytes,
+            incident_id=str(incident_id),
+            camera_id=camera_id,
+            filename=f"frame_{datetime.utcnow().strftime('%H%M%S')}.jpg",
+            content_type="image/jpeg",
+        )
+        logger.info(f"[ASYNC FORENSIC SSoT] Visual evidence successfully frozen for incident {incident_id}: {object_name}")
+        return object_name
+    except Exception as e:
+        logger.error(f"[ASYNC FORENSIC ERROR] Failed to freeze frame for incident {incident_id}: {e}")
+        return None
+
+
+class WeaponDebouncer:
+    """
+    Per-track temporal debouncer for weapon detections.
+
+    Filters out flicker false positives (1-2 frame hallucinations where YOLO
+    confuses a phone, remote, or hand for a knife/pistol) by requiring a
+    track to sustain a configurable number of detections within a sliding
+    time window, with a minimum average confidence, before promoting it to
+    a real threat.
+
+    State machine (per track key `(camera_id, track_id, class)`):
+
+        pending       -> hits accumulate but threshold not yet reached
+        newly_confirmed -> exact frame where threshold crossed (single fire)
+        active        -> already confirmed; threat is currently in the frame
+        idle/evicted  -> no detections for TTL seconds; track is GC'd
+
+    The ``observe()`` method returns two booleans, ``is_newly_confirmed`` and
+    ``is_active_threat``, so callers can distinguish "fire a new alert" from
+    "report this as an ongoing threat for compound rule evaluation". Both
+    states must gate downstream rules: an unconfirmed signal is mathematically
+    invalid for compound rule escalation as well, since the same noisy frame
+    that we rejected for a HIGH alert cannot be trusted to drive a CRITICAL
+    alert just because an unknown person happens to be co-located.
+
+    Design notes:
+        * Composite key includes class so a track that flips between
+          ``knife`` and pistol`` doesn't share confirmations across labels.
+        * Sliding window is implemented as list pruning per observation, not
+          as a periodic sweep — at ~10 FPS the per-call cost is negligible
+          and avoids the complexity of a background thread.
+        * Track state is wiped by ``_gc()`` after ``ttl`` seconds of silence
+          to bound memory in long-running deployments with many short-lived
+          tracks.
+    """
+
+    def __init__(
+        self,
+        hits: int = WEAPON_DEBOUNCE_HITS,
+        window: float = WEAPON_DEBOUNCE_WINDOW,
+        min_avg_conf: float = WEAPON_DEBOUNCE_MIN_AVG_CONF,
+        ttl: float = WEAPON_TRACK_TTL,
+    ):
+        self.hits = hits
+        self.window = window
+        self.min_avg_conf = min_avg_conf
+        self.ttl = ttl
+        # key: (camera_id, track_id, class) -> state dict
+        self._tracks: Dict[Tuple[str, int, str], Dict[str, Any]] = {}
+        self._last_gc = time.time()
+
+    def observe(
+        self,
+        camera_id: str,
+        track_id: Optional[int],
+        cls: str,
+        confidence: float,
+    ) -> Tuple[bool, bool]:
+        """
+        Record a detection and return (is_newly_confirmed, is_active_threat).
+
+        ``is_newly_confirmed``: True only on the exact frame the track crosses
+            the confirmation threshold. Drives the standalone WEAPON_DETECTED
+            alert, which must fire exactly once per track lifecycle to avoid
+            duplicate incidents for the same physical object.
+
+        ``is_active_threat``: True for every frame where the track is currently
+            confirmed and within the activity window. Drives compound rules
+            (RN-06: unknown person + weapon) that need to know whether a
+            validated weapon is in the frame *right now*, not just whether
+            one was ever confirmed at some point in the past.
+
+        Detections without a track_id (yet to be assigned by ByteTrack —
+        typically the first 1-2 frames of an object's lifetime) cannot be
+        debounced reliably and are conservatively treated as noise:
+        ``(False, False)``. They will not escalate into either standalone or
+        compound alerts; the next 1-2 frames will carry a real track_id and
+        normal accumulation resumes.
+        """
+        if track_id is None:
+            return False, False
+
+        now = time.time()
+        # Opportunistic GC. Cheap call; runs at most once per second.
+        if now - self._last_gc > 1.0:
+            self._gc(now)
+
+        key = (camera_id, track_id, cls)
+        state = self._tracks.get(key)
+        if state is None:
+            state = {
+                "hits": [],          # list of (timestamp, confidence)
+                "confirmed": False,
+                "last_seen": now,
+            }
+            self._tracks[key] = state
+
+        # Prune hits outside the sliding window before appending the new one,
+        # so the confidence average reflects only recent observations.
+        cutoff = now - self.window
+        state["hits"] = [h for h in state["hits"] if h[0] >= cutoff]
+        state["hits"].append((now, confidence))
+        state["last_seen"] = now
+
+        if state["confirmed"]:
+            # Already-confirmed track: still an active threat for compound
+            # rules, but never a "newly confirmed" event again. The standalone
+            # alert pipeline must not re-fire for the same track.
+            return False, True
+
+        if len(state["hits"]) >= self.hits:
+            avg_conf = sum(c for _, c in state["hits"]) / len(state["hits"])
+            if avg_conf >= self.min_avg_conf:
+                state["confirmed"] = True
+                return True, True
+
+        return False, False
+
+    def _gc(self, now: float) -> None:
+        """Evict tracks idle longer than ``ttl`` seconds. Called opportunistically."""
+        expired = [k for k, st in self._tracks.items() if now - st["last_seen"] > self.ttl]
+        for k in expired:
+            del self._tracks[k]
+        self._last_gc = now
+
+
+# Module-level singletons, populated when start_orchestrator() runs. Kept as
+# module attributes (not true global mutables) so the helper functions
+# (_save_evidence, _evaluate_weapon_event, etc.) can access them without
+# threading every signature.
 _frame_buffer: Optional[AnnotatedFrameBuffer] = None
+_weapon_debouncer: Optional[WeaponDebouncer] = None
 
 
 PRIORITY_LOW = "LOW"
@@ -190,60 +367,13 @@ def _create_alert(db, incident_id, message: str) -> Any:
         return alert
 
 def _save_evidence(incident_id: str, camera_id: str, frame_data=None) -> Optional[str]:
-    """
-    Persists the latest annotated frame (from the annotator's output stream)
-    as evidence for the given incident.
-
-    The `frame_data` parameter is kept in the signature for backwards
-    compatibility but is no longer used: workers stopped sending frame bytes
-    to the orchestrator since the rendering moved to the annotator. Evidence
-    is sourced from the in-process buffer fed by AnnotatedFrameBuffer.
-
-    If the annotator hasn't produced a frame yet (e.g. cold start, or the
-    annotator process is down), this returns None and skips persistence
-    rather than uploading a raw, unannotated frame — visual consistency
-    between live view and evidence is the explicit guarantee of this
-    architecture.
-    """
-    if _frame_buffer is None:
-        logger.warning(
-            f"AnnotatedFrameBuffer not initialized when persisting incident "
-            f"{incident_id}; evidence will not be saved."
-        )
-        return None
-
-    frame_bytes = _frame_buffer.get_latest()
-    if frame_bytes is None:
-        logger.warning(
-            f"No annotated frame available for incident {incident_id}; "
-            "skipping evidence upload (annotator may still be warming up)."
-        )
-        return None
-
-    try:
-        from src.utils.s3_client import upload_incident_clip
-
-        # TECH DEBT: Synchronous network I/O.
-        # Uploading to MinIO/S3 blocks the main ZMQ event loop. If the network degrades,
-        # the IPC bus will back up. V2 must offload this to a Celery background worker.
-        object_name = upload_incident_clip(
-            file_data=frame_bytes,
-            incident_id=str(incident_id),
-            camera_id=camera_id,
-            filename=f"frame_{datetime.utcnow().strftime('%H%M%S')}.jpg",
-            content_type="image/jpeg",
-        )
-        logger.debug(f"Evidence saved: {object_name}")
-        return object_name
-    except Exception as e:
-        logger.error(f"Failed to save evidence: {e}")
-        return None
+    """ Kept strictly for backwards compatibility. Implementation moved to _execute_async_persistence. """
+    return None
 
 def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     detections = event.get("detections", [])
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     face_summary = {"unknown_detected": False, "known_names": []}
 
@@ -258,7 +388,11 @@ def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if _check_cooldown(camera_id, "RN-02"):
                 incident = _create_incident(db, event, "RN-02", PRIORITY_MEDIUM)
                 _create_alert(db, incident.id, f"Persona desconocida detectada en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-                _save_evidence(incident.id, camera_id, frame_data)
+                
+                # NON-BLOCKING ASYNC QUEUING
+                with _pending_evidences_lock:
+                    _pending_evidences.append((camera_id, incident.id))
+                    
                 logger.warning(f"[SECURITY ALERT] Unknown person at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
         else:
             face_summary["known_names"].append(name)
@@ -267,26 +401,79 @@ def _evaluate_face_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return face_summary
 
 def _evaluate_weapon_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Promotes weapon detections to incidents and surfaces validated threats
+    to the compound rule engine.
+
+    Per-detection flow:
+        1. Feed the detection into the debouncer to learn whether the
+           underlying track is (a) newly confirmed this frame and (b)
+           currently an active threat.
+        2. If the debouncer rejects the detection as noise (``not
+           is_active_threat``), skip it entirely. Critically, do NOT
+           populate ``weapon_summary``: a signal too unreliable to drive
+           the HIGH-priority standalone alert is just as unreliable for
+           driving the CRITICAL-priority compound alert, regardless of
+           what other modules report in the same window.
+        3. For validated detections, populate ``weapon_summary`` so the
+           compound rule engine can correlate it with face/pose findings.
+        4. Fire the standalone ``WEAPON_DETECTED`` incident only on the
+           exact frame the track crosses the confirmation threshold,
+           subject to the global cooldown.
+    """
     detections = event.get("detections", [])
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     weapon_summary = {"weapon_detected": False, "weapons": []}
 
     for detection in detections:
         weapon_class = detection.get("class", "unknown")
+        track_id = detection.get("track_id")
         confidence = detection.get("confidence", 0.0)
         conf_pct = confidence * 100
 
-        weapon_summary["weapon_detected"] = True
-        weapon_summary["weapons"].append(weapon_class)
+        # 1. Evaluate debouncer first. Returns two states so we can
+        # distinguish "fire the standalone alert" from "report as ongoing
+        # threat to compound rules".
+        if _weapon_debouncer is None:
+            is_newly_confirmed, is_active_threat = False, False
+        else:
+            is_newly_confirmed, is_active_threat = _weapon_debouncer.observe(
+                camera_id, track_id, weapon_class, confidence
+            )
 
-        if _check_cooldown(camera_id, "WEAPON_DETECTED"):
+        # 2. Reject unconfirmed detections entirely. They must not influence
+        # standalone OR compound rules.
+        if not is_active_threat:
+            continue
+
+        # 3. The detection is validated reality — only now does the compound
+        # rule engine learn that a weapon is in the frame.
+        weapon_summary["weapon_detected"] = True
+        if weapon_class not in weapon_summary["weapons"]:
+            weapon_summary["weapons"].append(weapon_class)
+
+        # 4. Standalone alert: fires once per track lifecycle on the exact
+        # frame the track crosses the confirmation threshold, gated by the
+        # global cooldown to avoid burst alerts when multiple tracks of the
+        # same class confirm in rapid succession.
+        if is_newly_confirmed and _check_cooldown(camera_id, "WEAPON_DETECTED"):
             incident = _create_incident(db, event, "WEAPON_DETECTED", PRIORITY_HIGH)
-            _create_alert(db, incident.id, f"ARMA DETECTADA: {weapon_class} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-            _save_evidence(incident.id, camera_id, frame_data)
-            logger.warning(f"[WEAPON ALERT] {weapon_class} detected at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
+            _create_alert(
+                db,
+                incident.id,
+                f"ARMA DETECTADA: {weapon_class} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%",
+            )
+            
+            # NON-BLOCKING ASYNC QUEUING
+            with _pending_evidences_lock:
+                _pending_evidences.append((camera_id, incident.id))
+
+            logger.warning(
+                f"[WEAPON ALERT PENDING VISUAL SSoT] {weapon_class} (track={track_id}) confirmed. "
+                f"Waiting for annotated frame from port {ANNOTATED_SUB_PORT} to freeze evidence."
+            )
 
     return weapon_summary
 
@@ -294,7 +481,6 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     detections = event.get("detections", [])
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     pose_summary = {"aggression_detected": False, "fall_detected": False, "actions": []}
 
@@ -314,7 +500,11 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if _check_cooldown(camera_id, "RN-04"):
                 incident = _create_incident(db, event, "RN-04", PRIORITY_HIGH)
                 _create_alert(db, incident.id, f"AGRESION DETECTADA: {action} en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-                _save_evidence(incident.id, camera_id, frame_data)
+                
+                # NON-BLOCKING ASYNC QUEUING
+                with _pending_evidences_lock:
+                    _pending_evidences.append((camera_id, incident.id))
+                    
                 logger.warning(f"[AGGRESSION ALERT] {action} at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
 
         elif action.lower() in fall_actions:
@@ -323,7 +513,11 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if _check_cooldown(camera_id, "RN-05"):
                 incident = _create_incident(db, event, "RN-05", PRIORITY_MEDIUM)
                 _create_alert(db, incident.id, f"CAIDA DETECTADA en {camera_id} ({timestamp}) - Confianza: {conf_pct:.1f}%")
-                _save_evidence(incident.id, camera_id, frame_data)
+                
+                # NON-BLOCKING ASYNC QUEUING
+                with _pending_evidences_lock:
+                    _pending_evidences.append((camera_id, incident.id))
+                    
                 logger.warning(f"[FALL ALERT] Fall detected at {timestamp} on {camera_id} (Confidence: {conf_pct:.1f}%)")
 
     return pose_summary
@@ -331,7 +525,6 @@ def _evaluate_pose_event(db, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _evaluate_compound_event(db, event: Dict[str, Any], face_summary: Optional[Dict], weapon_summary: Optional[Dict], pose_summary: Optional[Dict]) -> None:
     timestamp = event.get("timestamp", "unknown_time")
     camera_id = event.get("camera_id", "unknown_camera")
-    frame_data = event.get("frame_data")
 
     unknown = face_summary and face_summary.get("unknown_detected", False)
     weapon = weapon_summary and weapon_summary.get("weapon_detected", False)
@@ -347,15 +540,24 @@ def _evaluate_compound_event(db, event: Dict[str, Any], face_summary: Optional[D
 
             incident = _create_incident(db, event, "RN-06", PRIORITY_CRITICAL)
             _create_alert(db, incident.id, f"ALERTA CRITICA: Persona desconocida con amenaza activa ({', '.join(threats)}) en {camera_id} ({timestamp})")
-            _save_evidence(incident.id, camera_id, frame_data)
+            
+            # NON-BLOCKING ASYNC QUEUING
+            with _pending_evidences_lock:
+                _pending_evidences.append((camera_id, incident.id))
+                
             logger.critical(f"[CRITICAL] Unknown person + active threat at {timestamp} on {camera_id}")
 
     if known_names and fall:
         if _check_cooldown(camera_id, "RN-07"):
             incident = _create_incident(db, event, "RN-07", PRIORITY_MEDIUM)
             _create_alert(db, incident.id, f"ALERTA ASISTENCIAL: Residente {', '.join(known_names)} detecto caida en {camera_id} ({timestamp})")
-            _save_evidence(incident.id, camera_id, frame_data)
+            
+            # NON-BLOCKING ASYNC QUEUING
+            with _pending_evidences_lock:
+                _pending_evidences.append((camera_id, incident.id))
+                
             logger.warning(f"[ASSISTENTIAL] Resident fall detected at {timestamp} on {camera_id}")
+
 
 class EventAccumulator:
     """
@@ -382,14 +584,22 @@ class EventAccumulator:
         self.events.clear()
         self.last_reset = time.time()
 
+
 def start_orchestrator() -> None:
-    # Initialize the AnnotatedFrameBuffer BEFORE binding the rule socket. This
-    # way the buffer is already populating by the time the first detection
-    # event arrives, minimizing the cold-start window where _save_evidence
-    # would have nothing to persist. The buffer is exposed via a module-level
-    # name so the helper functions can reach it without signature changes.
-    global _frame_buffer
+    # Initialize the AnnotatedFrameBuffer and the WeaponDebouncer BEFORE
+    # binding the rule socket. This way both subsystems are warm by the time
+    # the first detection event arrives, minimizing cold-start windows where
+    # evidence has nothing to persist or debouncer state must be lazily
+    # created. They are exposed via module-level names so helper functions
+    # can reach them without signature changes.
+    global _frame_buffer, _weapon_debouncer
     _frame_buffer = AnnotatedFrameBuffer(ANNOTATED_SUB_PORT)
+    _weapon_debouncer = WeaponDebouncer()
+    logger.info(
+        f"Weapon debouncer online (hits={WEAPON_DEBOUNCE_HITS}, "
+        f"window={WEAPON_DEBOUNCE_WINDOW}s, "
+        f"min_avg_conf={WEAPON_DEBOUNCE_MIN_AVG_CONF})"
+    )
 
     context = zmq.Context()
     receiver = context.socket(zmq.PULL)
@@ -431,4 +641,3 @@ def start_orchestrator() -> None:
 
         except Exception as e:
             logger.error(f"Error processing event: {e}")
-

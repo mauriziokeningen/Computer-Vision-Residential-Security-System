@@ -111,3 +111,27 @@ research/Body Movement/data/*
 
 # ...But do not ignore the .gitkeep file
 !research/Body Movement/data/.gitkeep
+
+# Preserve the skeletal data directory structures
+"research/Body Movement - MediaPipe/data/"*
+! "research/Body Movement - MediaPipe/data/.gitkeep"
+! "research/Body Movement - MediaPipe/data/custom_poses/.gitkeep"
+
+# --- ML Artifacts ---
+mlruns/
+lightning_logs/
+*.onnx
+*.ckpt
+*.pth
+
+# --- Data & Binaries ---
+data/processed/
+data/custom_poses/*.json
+*.npy
+*.mp4
+*.avi
+
+# --- Python Environment ---
+__pycache__/
+.ipynb_checkpoints/
+.env

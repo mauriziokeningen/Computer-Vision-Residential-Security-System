@@ -143,6 +143,7 @@ export const en: Dictionary = {
     validFrom: 'Valid from',
     validUntil: 'Valid until',
     registerBtn: 'Register person',
+    registerSuccess: 'registered successfully',
     registering: 'Registering…',
     bufferFull: 'Buffer full · retake a slot',
     captureFrame: 'Capture frame',

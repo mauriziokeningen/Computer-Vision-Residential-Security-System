@@ -141,6 +141,7 @@ export const es = {
     validFrom: 'Válido desde',
     validUntil: 'Válido hasta',
     registerBtn: 'Registrar persona',
+    registerSuccess: 'registrada correctamente',
     registering: 'Registrando…',
     bufferFull: 'Buffer lleno · retoma un slot',
     captureFrame: 'Capturar frame',
@@ -180,4 +181,8 @@ export const es = {
   },
 } as const;
 
-export type Dictionary = typeof es;
+type SuffixValuesToString<T> = {
+  [K in keyof T]: T[K] extends object ? SuffixValuesToString<T[K]> : string;
+};
+
+export type Dictionary = SuffixValuesToString<typeof es>;
